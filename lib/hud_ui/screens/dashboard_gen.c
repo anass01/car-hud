@@ -10,6 +10,10 @@
 #include "dashboard_gen.h"
 #include "hud_ui.h"
 
+#ifndef DASH_SIZE
+#define DASH_SIZE 412
+#endif
+
 /*********************
  *      DEFINES
  *********************/
@@ -68,10 +72,10 @@ lv_obj_t * dashboard_create(void)
     lv_obj_add_style(lv_obj_0, &style_dashboard, 0);
     lv_obj_t * lv_arc_0 = lv_arc_create(lv_obj_0);
     lv_obj_set_align(lv_arc_0, LV_ALIGN_TOP_MID);
-    lv_obj_set_width(lv_arc_0, 466);
-    lv_obj_set_height(lv_arc_0, 466);
+    lv_obj_set_width(lv_arc_0, DASH_SIZE);
+    lv_obj_set_height(lv_arc_0, DASH_SIZE);
     lv_arc_set_min_value(lv_arc_0, 0);
-    lv_arc_set_max_value(lv_arc_0, 8000);
+    lv_arc_set_max_value(lv_arc_0, 5000); // 5000 RPM max for Hyundai 1.5 CRDi
     lv_arc_bind_value(lv_arc_0, &engine_rpm);
     lv_obj_set_flag(lv_arc_0, LV_OBJ_FLAG_CLICKABLE, false);
     lv_obj_add_style(lv_arc_0, &style_arc, 0);
@@ -88,6 +92,27 @@ lv_obj_t * dashboard_create(void)
     lv_obj_set_align(lv_label_1, LV_ALIGN_CENTER);
     lv_obj_set_style_text_font(lv_label_1, roboto_bold_150, 0);
     lv_obj_set_y(lv_label_1, -30);
+
+    // Turbo Pressure Gauge (0.00 to 2.50 bar, represented as 0 to 250)
+    lv_obj_t * lv_arc_boost = lv_arc_create(lv_obj_0);
+    lv_arc_set_bg_start_angle(lv_arc_boost, 140);
+    lv_arc_set_bg_end_angle(lv_arc_boost, 40);
+    lv_obj_set_align(lv_arc_boost, LV_ALIGN_CENTER);
+    lv_obj_set_width(lv_arc_boost, (DASH_SIZE * 260) / 412);
+    lv_obj_set_height(lv_arc_boost, (DASH_SIZE * 260) / 412);
+    lv_obj_set_y(lv_arc_boost, 55);
+    lv_arc_set_min_value(lv_arc_boost, 0);
+    lv_arc_set_max_value(lv_arc_boost, 250);
+    lv_arc_bind_value(lv_arc_boost, &turbo_boost);
+    lv_obj_set_flag(lv_arc_boost, LV_OBJ_FLAG_CLICKABLE, false);
+    lv_obj_add_style(lv_arc_boost, &style_arc, 0);
+    lv_obj_add_style(lv_arc_boost, &style_arc_indicator, LV_PART_INDICATOR);
+    lv_obj_add_style(lv_arc_boost, &style_knob, LV_PART_KNOB);
+
+    lv_obj_t * lv_label_boost = lv_label_create(lv_obj_0);
+    lv_label_bind_text(lv_label_boost, &turbo_boost_str, NULL);
+    lv_obj_set_align(lv_label_boost, LV_ALIGN_CENTER);
+    lv_obj_set_y(lv_label_boost, 55);
     
     lv_obj_t * lv_label_2 = lv_label_create(lv_obj_0);
     lv_label_bind_text(lv_label_2, &coolant_temp, "%02d°C");
@@ -98,10 +123,10 @@ lv_obj_t * dashboard_create(void)
     lv_arc_set_bg_start_angle(lv_arc_1, 55);
     lv_arc_set_bg_end_angle(lv_arc_1, 125);
     lv_obj_set_align(lv_arc_1, LV_ALIGN_TOP_MID);
-    lv_obj_set_width(lv_arc_1, 466);
-    lv_obj_set_height(lv_arc_1, 466);
+    lv_obj_set_width(lv_arc_1, DASH_SIZE);
+    lv_obj_set_height(lv_arc_1, DASH_SIZE);
     lv_arc_set_min_value(lv_arc_1, 0);
-    lv_arc_set_max_value(lv_arc_1, 50);
+    lv_arc_set_max_value(lv_arc_1, 45); // 45L for Hyundai Accent 3 MC
     lv_arc_bind_value(lv_arc_1, &fuel_capacity);
     lv_obj_set_flag(lv_arc_1, LV_OBJ_FLAG_CLICKABLE, false);
     lv_obj_add_style(lv_arc_1, &style_arc, 0);

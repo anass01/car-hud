@@ -39,6 +39,8 @@
 #elif defined(VIEWE_SMARTRING) || defined(VIEWE_KNOB_15)
 #include "displays/viewe.hpp"
 // #define SW_ROTATION
+#elif defined(WAVESHARE_146)
+#include "displays/waveshare_1_46.hpp"
 #elif ELECROW_C3
 #include "displays/generic.hpp"
 #include "elecrow.hpp"

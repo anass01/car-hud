@@ -15,7 +15,7 @@
 			width="466"
 			height="466"
 			min_value="0"
-			max_value="8000"
+			max_value="5000"
 			bind_value="engine_rpm"
 			clickable="false"
 		>
@@ -28,6 +28,24 @@
 
 		<lv_label bind_text="speed" align="center" style_text_font="roboto_bold_150" y="-30" />
 
+		<lv_arc
+			bg_start_angle="140"
+			bg_end_angle="40"
+			align="center"
+			width="260"
+			height="260"
+			y="55"
+			min_value="0"
+			max_value="250"
+			bind_value="turbo_boost"
+			clickable="false"
+		>
+			<style name="style_arc" />
+			<style name="style_arc_indicator" selector="indicator" />
+			<style name="style_knob" selector="knob" />
+		</lv_arc>
+		<lv_label bind_text="turbo_boost_str" align="center" y="55" />
+
 		<lv_label bind_text="coolant_temp" bind_text-fmt="%02d°C" align="bottom_mid" y="-120" />
 
 		<lv_arc
@@ -37,7 +55,7 @@
 			width="466"
 			height="466"
 			min_value="0"
-			max_value="50"
+			max_value="45"
 			bind_value="fuel_capacity"
 			clickable="false"
 		>

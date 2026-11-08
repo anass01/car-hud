@@ -18,6 +18,8 @@
 		<int name="coolant_temp" value="0" />
 		<int name="speed" value="0" />
 		<int name="fuel_capacity" value="0" />
+		<int name="turbo_boost" value="0" min_value="0" max_value="250" />
+		<string name="turbo_boost_str" value="0.00 bar" />
 
 		<int name="can_error" value="0" min_value="0" max_value="1" />
 		<int name="con_error" value="1" min_value="0" max_value="1" />

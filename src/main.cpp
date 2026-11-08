@@ -61,6 +61,7 @@ const uint8_t CMD_ATSP6[] = {0x41, 0x54, 0x53, 0x50, 0x36, 0x0D}; // Set protoco
 
 const uint8_t CMD_SPEED[] = {0x30, 0x31, 0x30, 0x44, 0x0D}; // Vehicle speed (010D)
 const uint8_t CMD_RPM[] = {0x30, 0x31, 0x30, 0x43, 0x0D};   // Engine RPM (010C)
+const uint8_t CMD_MAP[] = {0x30, 0x31, 0x30, 0x42, 0x0D};   // Intake Manifold Absolute Pressure / Turbo MAP (010B)
 const uint8_t CMD_FUEL[] = {0x30, 0x31, 0x32, 0x46, 0x0D};  // Fuel Capacity (012F)
 const uint8_t CMD_TEMP[] = {0x30, 0x31, 0x30, 0x35, 0x0D};  // Coolant Temperature (0105)
 
@@ -176,12 +177,33 @@ void parseObd(const uint8_t *data, size_t len)
     break;
   }
 
+  case 0x0B: // MAP (Intake Manifold Absolute Pressure) -> Turbo Boost
+  {
+    uint8_t A = hexToByte(data[6], data[7]); // MAP in kPa (0 - 255)
+    float map_kpa = (float)A;
+    // Standard atmospheric pressure ~101 kPa; calculate gauge boost in bar:
+    float boost_bar = (map_kpa - 101.0f) / 100.0f;
+    if (boost_bar < 0.0f)
+      boost_bar = 0.0f;
+    Timber.i("MAP: %.0f kPa, Boost: %.2f bar\n", map_kpa, boost_bar);
+
+    int boost_int = (int)(boost_bar * 100.0f); // 0 to 250 (hundredths of bar)
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.2f bar", boost_bar);
+
+    LVGL_EXEC({
+      lv_subject_set_int(&turbo_boost, boost_int);
+      lv_subject_copy_string(&turbo_boost_str, buf);
+    });
+    break;
+  }
+
   case 0x2F: // Fuel
   {
     uint8_t A = hexToByte(data[6], data[7]);
     float fuel = (A * 100.0f) / 255.0f;
     Timber.i("Fuel: %.1f %%\n", fuel);
-    int litres = fuel * 50 / 100; // Assuming 50L tank
+    int litres = fuel * 45 / 100; // Hyundai Accent MC 45L tank
     LVGL_EXEC(lv_subject_set_int(&fuel_capacity, litres));
     break;
   }
@@ -353,7 +375,7 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *
   lv_display_flush_ready(display); /* tell lvgl that flushing is done */
 }
 
-/* Rounder event callback to align area to 2x2 pixels */
+/* Rounder event callback to align area to 2x2 or 4x2 pixels */
 void rounder_event_cb(lv_event_t *e)
 {
   lv_area_t *area = lv_event_get_invalidated_area(e);
@@ -363,11 +385,16 @@ void rounder_event_cb(lv_event_t *e)
   uint16_t y1 = area->y1;
   uint16_t y2 = area->y2;
 
+#ifdef WAVESHARE_146
+  // SPD2010 requires horizontal coordinates aligned to multiples of 4
+  area->x1 = (x1 >> 2) << 2;
+  area->x2 = ((x2 >> 2) << 2) + 3;
+#else
   // round the start of coordinate down to the nearest 2M number
   area->x1 = (x1 >> 1) << 1;
-  area->y1 = (y1 >> 1) << 1;
-  // round the end of coordinate up to the nearest 2N+1 number
   area->x2 = ((x2 >> 1) << 1) + 1;
+#endif
+  area->y1 = (y1 >> 1) << 1;
   area->y2 = ((y2 >> 1) << 1) + 1;
 }
 
@@ -616,12 +643,21 @@ void loop()
   if (!obdChar)
     return;
 
-  // Fast-changing values
+  // Fast-changing values (RPM and Turbo MAP)
+  static bool pollRpmNext = true;
   if (now - lastFast >= FAST_INTERVAL)
   {
     lastFast = now;
 
-    obdWrite(CMD_RPM, sizeof(CMD_RPM));
+    if (pollRpmNext)
+    {
+      obdWrite(CMD_RPM, sizeof(CMD_RPM));
+    }
+    else
+    {
+      obdWrite(CMD_MAP, sizeof(CMD_MAP));
+    }
+    pollRpmNext = !pollRpmNext;
   }
 
   // medium-changing values

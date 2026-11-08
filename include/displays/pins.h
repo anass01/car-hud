@@ -209,6 +209,37 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
+#elif defined(WAVESHARE_146)
+
+// screen configs
+#define SCREEN_WIDTH 412
+#define SCREEN_HEIGHT 412
+#define OFFSET_X 0
+#define OFFSET_Y 0
+#define RGB_ORDER false
+
+// touch
+#define I2C_SDA 11
+#define I2C_SCL 10
+#define TP_INT 4
+#define TP_RST -1 // Handled via TCA9554 EXIO0
+
+// IO expander
+#define TCA9554_ADDR 0x20
+#define SPD2010_TOUCH_ADDR 0x53
+
+// display (QSPI)
+#define LCD_CS 21
+#define LCD_SCK 40
+#define LCD_SD0 46
+#define LCD_SD1 45
+#define LCD_SD2 42
+#define LCD_SD3 41
+#define LCD_BL 5
+
+#define BUZZER_PIN -1
+
+#define LV_BUFFER_SIZE (SCREEN_WIDTH * 30)
 
 #else
 
