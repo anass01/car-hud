@@ -2,8 +2,8 @@
  * @file settings_item_gen.h
  */
 
-#ifndef SETTINGS_ITEM_H
-#define SETTINGS_ITEM_H
+#ifndef LVGL_PRO_SETTINGS_ITEM_GEN_H
+#define LVGL_PRO_SETTINGS_ITEM_GEN_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,4 +41,4 @@ lv_obj_t * settings_item_create(lv_obj_t * parent, const void * icon);
 } /*extern "C"*/
 #endif
 
-#endif /*SETTINGS_ITEM_H*/
+#endif /*LVGL_PRO_SETTINGS_ITEM_GEN_H*/

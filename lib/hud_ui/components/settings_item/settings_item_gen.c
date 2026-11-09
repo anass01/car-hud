@@ -8,7 +8,7 @@
  *********************/
 
 #include "settings_item_gen.h"
-#include "hud_ui.h"
+#include "../../hud_ui.h"
 
 /*********************
  *      DEFINES
@@ -40,7 +40,10 @@ lv_obj_t * settings_item_create(lv_obj_t * parent, const void * icon)
     static bool style_inited = false;
 
     if (!style_inited) {
+        /*Init all styles*/
         lv_style_init(&style_item);
+        lv_style_init(&style_slider);
+
         lv_style_set_width(&style_item, 360);
         lv_style_set_height(&style_item, 100);
         lv_style_set_pad_all(&style_item, 0);
@@ -54,23 +57,30 @@ lv_obj_t * settings_item_create(lv_obj_t * parent, const void * icon)
         lv_style_set_layout(&style_item, LV_LAYOUT_FLEX);
         lv_style_set_flex_track_place(&style_item, LV_FLEX_ALIGN_CENTER);
         lv_style_set_flex_cross_place(&style_item, LV_FLEX_ALIGN_CENTER);
-
-        lv_style_init(&style_slider);
         lv_style_set_width(&style_slider, 200);
 
         style_inited = true;
     }
 
-    lv_obj_t * lv_obj_0 = lv_obj_create(parent);
-    lv_obj_set_name_static(lv_obj_0, "settings_item_#");
 
-    lv_obj_add_style(lv_obj_0, &style_item, 0);
-    lv_obj_t * lv_image_0 = lv_image_create(lv_obj_0);
-    lv_image_set_src(lv_image_0, icon);
+    lv_obj_t * the_root = NULL;
+
+    #if HUD_UI_CHECK_COMPILE_TARGET(HUD_UI_TARGET_ALL)
+    if (hud_ui_check_target(HUD_UI_TARGET_ALL)) {
+        lv_obj_t * lv_obj_0 = lv_obj_create(parent);
+        lv_obj_set_name_static(lv_obj_0, "settings_item_#");
+
+        lv_obj_add_style(lv_obj_0, &style_item, 0);
+        lv_obj_t * lv_image_0 = lv_image_create(lv_obj_0);
+        lv_image_set_src(lv_image_0, icon);
+
+        the_root = lv_obj_0;
+    }
+    #endif
 
     LV_TRACE_OBJ_CREATE("finished");
 
-    return lv_obj_0;
+    return the_root;
 }
 
 /**********************

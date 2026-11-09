@@ -2,8 +2,8 @@
  * @file dashboard_gen.h
  */
 
-#ifndef DASHBOARD_H
-#define DASHBOARD_H
+#ifndef LVGL_PRO_DASHBOARD_GEN_H
+#define LVGL_PRO_DASHBOARD_GEN_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,4 +43,4 @@ lv_obj_t * dashboard_create(void);
 } /*extern "C"*/
 #endif
 
-#endif /*DASHBOARD_H*/
+#endif /*LVGL_PRO_DASHBOARD_GEN_H*/

@@ -1,5 +1,8 @@
-<project>
+<project name="hud_ui" lvgl_version="9.4.0">
 	<targets>
+		<target name="waveshare_1_46">
+			<display width="412" height="412" radius="206" />
+		</target>
 		<target name="target1">
 			<display width="466" height="466" radius="233" />
 		</target>

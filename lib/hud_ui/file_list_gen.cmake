@@ -1,6 +1,6 @@
 list(
   APPEND
-  PROJECT_SOURCES
+  LV_EDITOR_PROJECT_SOURCES
   ${CMAKE_CURRENT_LIST_DIR}/components/settings_item/settings_item_gen.c
   ${CMAKE_CURRENT_LIST_DIR}/fonts/roboto_bold_40_data.c
   ${CMAKE_CURRENT_LIST_DIR}/fonts/roboto_bold_150_data.c

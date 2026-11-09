@@ -32,7 +32,7 @@
 			</settings_item>
 			<settings_item>
 				<lv_label flex_grow="1" text="HUD Mode" />
-				<lv_dropdown options="OFF&#10;X Flip&#10;Y Flip&#10;XY Flip" bind_value="settings_hud" symbol="NULL">
+				<lv_dropdown options="OFF&#10;X Flip&#10;Y Flip&#10;XY Flip" bind_value="settings_hud">
 					<style name="style_dropdown" />
 					<lv_dropdown-list style_pad_all="10">
 						<style name="style_dropdown" />
@@ -41,7 +41,7 @@
 			</settings_item>
 			<!-- <settings_item icon="rotation">
 				<lv_label text="Rotation" flex_grow="1" />
-				<lv_dropdown options="0°&#10;90°&#10;180°&#10;270°" bind_value="settings_rotation" symbol="">
+				<lv_dropdown options="0°&#10;90°&#10;180°&#10;270°" bind_value="settings_rotation">
 					<style name="style_dropdown" />
 					<lv_dropdown-list style_pad_all="10">
 						<style name="style_dropdown" />
