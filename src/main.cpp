@@ -77,14 +77,6 @@ SemaphoreHandle_t lvgl_mutex;
 
 bool should_restart = false;
 
-static uint32_t lastFast = 0;   // rpm
-static uint32_t lastMedium = 0; // speed
-static uint32_t lastSlow = 0;   // fuel, temp
-
-const uint32_t FAST_INTERVAL = 100;    // 0.1 seconds
-const uint32_t MEDIUM_INTERVAL = 1000; // 1 second
-const uint32_t SLOW_INTERVAL = 10000;  // 10 seconds
-
 /* OBD UUIDs (16-bit, vendor specific) */
 static NimBLEUUID OBD_SERVICE_UUID("FFF0");
 static NimBLEUUID OBD_CHAR_UUID("FFF1");
@@ -97,9 +89,11 @@ static NimBLEScan *scan = nullptr;
 /* ---------- HEX UTILS ---------- */
 static uint8_t hexToByte(uint8_t hi, uint8_t lo)
 {
-  hi = (hi <= '9') ? hi - '0' : hi - 'A' + 10;
-  lo = (lo <= '9') ? lo - '0' : lo - 'A' + 10;
-  return (hi << 4) | lo;
+  if (hi >= 'a' && hi <= 'f') hi -= 32;
+  if (lo >= 'a' && lo <= 'f') lo -= 32;
+  uint8_t h = (hi >= '0' && hi <= '9') ? (hi - '0') : ((hi >= 'A' && hi <= 'F') ? (hi - 'A' + 10) : 0);
+  uint8_t l = (lo >= '0' && lo <= '9') ? (lo - '0') : ((lo >= 'A' && lo <= 'F') ? (lo - 'A' + 10) : 0);
+  return (h << 4) | l;
 }
 
 /**
@@ -143,25 +137,60 @@ String formatHexString(
 /* ---------- SIMPLE PARSER ---------- */
 void parseObd(const uint8_t *data, size_t len)
 {
-  if (len < 8)
+  if (len < 4)
     return;
 
-  if (data[4] == 'E' && data[5] == 'R' && data[6] == 'R' && data[7] == 'O')
+  // Check for error response ("ERROR", "CAN ERROR", etc.)
+  for (size_t i = 0; i + 4 <= len; i++)
   {
-    LVGL_EXEC(lv_subject_set_int(&can_error, 1));
-    return;
+    if ((data[i] == 'E' || data[i] == 'e') &&
+        (data[i + 1] == 'R' || data[i + 1] == 'r') &&
+        (data[i + 2] == 'R' || data[i + 2] == 'r') &&
+        (data[i + 3] == 'O' || data[i + 3] == 'o'))
+    {
+      LVGL_EXEC(lv_subject_set_int(&can_error, 1));
+      return;
+    }
   }
-  // Must start with ASCII "41"
-  if (data[0] != '4' || data[1] != '1')
+
+  // Look for Mode 01 response: ASCII "41" anywhere in buffer
+  int p41 = -1;
+  for (size_t i = 0; i + 1 < len; i++)
+  {
+    if (data[i] == '4' && data[i + 1] == '1')
+    {
+      p41 = i;
+      break;
+    }
+  }
+
+  if (p41 < 0)
     return;
 
-  uint8_t pid = hexToByte(data[3], data[4]);
+  size_t cur = p41 + 2;
+  while (cur < len && data[cur] == ' ') cur++;
+  if (cur + 2 > len) return;
+
+  uint8_t pid = hexToByte(data[cur], data[cur + 1]);
+  cur += 2;
+
+  while (cur < len && data[cur] == ' ') cur++;
+  if (cur + 2 > len) return;
+
+  uint8_t A = hexToByte(data[cur], data[cur + 1]);
+  cur += 2;
+
+  while (cur < len && data[cur] == ' ') cur++;
+  uint8_t B = 0;
+  if (cur + 2 <= len)
+  {
+    B = hexToByte(data[cur], data[cur + 1]);
+  }
 
   switch (pid)
   {
   case 0x0D: // Speed
   {
-    uint8_t A = hexToByte(data[6], data[7]);
     Timber.i("Speed: %u km/h\n", A);
     LVGL_EXEC(lv_subject_set_int(&speed, (int)A));
     break;
@@ -169,8 +198,6 @@ void parseObd(const uint8_t *data, size_t len)
 
   case 0x0C: // RPM
   {
-    uint8_t A = hexToByte(data[6], data[7]);
-    uint8_t B = hexToByte(data[9], data[10]);
     float rpm = ((A << 8) | B) / 4.0f;
     Timber.i("RPM: %.0f\n", rpm);
     LVGL_EXEC(lv_subject_set_int(&engine_rpm, (int)rpm));
@@ -179,13 +206,24 @@ void parseObd(const uint8_t *data, size_t len)
 
   case 0x0B: // MAP (Intake Manifold Absolute Pressure) -> Turbo Boost
   {
-    uint8_t A = hexToByte(data[6], data[7]); // MAP in kPa (0 - 255)
     float map_kpa = (float)A;
-    // Standard atmospheric pressure ~101 kPa; calculate gauge boost in bar:
-    float boost_bar = (map_kpa - 101.0f) / 100.0f;
+
+    // Auto-calibrate ambient atmospheric pressure at idle/stop
+    static float ambient_kpa = 100.0f;
+    static bool ambient_calibrated = false;
+    int current_rpm = lv_subject_get_int(&engine_rpm);
+    int current_speed = lv_subject_get_int(&speed);
+    if (!ambient_calibrated && current_speed == 0 && current_rpm > 500 && current_rpm < 1100 && map_kpa >= 90.0f && map_kpa <= 110.0f)
+    {
+      ambient_kpa = map_kpa;
+      ambient_calibrated = true;
+      Timber.i("Calibrated ambient atmospheric pressure: %.0f kPa\n", ambient_kpa);
+    }
+
+    float boost_bar = (map_kpa - ambient_kpa) / 100.0f;
     if (boost_bar < 0.0f)
       boost_bar = 0.0f;
-    Timber.i("MAP: %.0f kPa, Boost: %.2f bar\n", map_kpa, boost_bar);
+    Timber.i("MAP: %.0f kPa, Ambient: %.0f kPa, Boost: %.2f bar\n", map_kpa, ambient_kpa, boost_bar);
 
     int boost_int = (int)(boost_bar * 100.0f); // 0 to 250 (hundredths of bar)
     char buf[16];
@@ -198,18 +236,18 @@ void parseObd(const uint8_t *data, size_t len)
     break;
   }
 
-  case 0x2F: // Fuel
+  case 0x2F: // Fuel Tank Level
   {
-    uint8_t A = hexToByte(data[6], data[7]);
-    float fuel = (A * 100.0f) / 255.0f;
-    Timber.i("Fuel: %.1f %%\n", fuel);
-    int litres = fuel * 45 / 100; // Hyundai Accent MC 45L tank
+    float fuel_pct = (A * 100.0f) / 255.0f;
+    int litres = (int)((fuel_pct * 45.0f) / 100.0f + 0.5f); // Hyundai Accent MC 45L tank
+    Timber.i("Fuel: %.1f %% (%d L)\n", fuel_pct, litres);
+    prefs.putInt("fuel_level", litres);
     LVGL_EXEC(lv_subject_set_int(&fuel_capacity, litres));
     break;
   }
+
   case 0x05: // Coolant temp
   {
-    uint8_t A = hexToByte(data[6], data[7]);
     float temp = A - 40.0f;
     Timber.i("Coolant: %.1f C\n", temp);
     LVGL_EXEC(lv_subject_set_int(&coolant_temp, (int)temp));
@@ -567,6 +605,9 @@ void setup()
 
   hud_ui_init("");
 
+  int fuel_level = prefs.getInt("fuel_level", 45); // Default to 45L full tank for Hyundai Accent MC
+  LVGL_EXEC(lv_subject_set_int(&fuel_capacity, fuel_level));
+
   // lv_subject_set_int(&settings_rotation, rotation);
   lv_subject_set_int(&settings_brightness, brightness);
   lv_subject_set_int(&settings_hud, hud);
@@ -598,8 +639,7 @@ void setup()
                                LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 3000);
   lv_obj_add_screen_load_event(dashboard_screen, LV_EVENT_LONG_PRESSED, settings_screen,
                                LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 0);
-  lv_obj_add_screen_load_event(settings_screen, LV_EVENT_LONG_PRESSED, dashboard_screen,
-                               LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 0);
+  // Settings back button navigates back to dashboard; avoid long-press loop on settings_screen
 
   if (show_boot)
   {
@@ -631,10 +671,11 @@ void loop()
     {
       delay(500);
       obdWrite(CMD_ATZ, sizeof(CMD_ATZ));
-      delay(300);
+      delay(800);
       obdWrite(CMD_ATE0, sizeof(CMD_ATE0));
       delay(300);
       obdWrite(CMD_ATSP6, sizeof(CMD_ATSP6));
+      delay(300);
     }
   }
 
@@ -643,41 +684,47 @@ void loop()
   if (!obdChar)
     return;
 
-  // Fast-changing values (RPM and Turbo MAP)
-  static bool pollRpmNext = true;
-  if (now - lastFast >= FAST_INTERVAL)
-  {
-    lastFast = now;
+  // Poll OBD sequentially: one command every 75ms
+  // Cycle: RPM -> MAP (Boost) -> SPEED -> RPM -> MAP (Boost) -> SLOW (FUEL / TEMP)
+  static uint32_t lastQueryTime = 0;
+  static uint8_t queryStep = 0;
+  static bool slowToggle = false;
+  const uint32_t OBD_POLL_INTERVAL = 75; // 75 ms between commands
 
-    if (pollRpmNext)
+  if (now - lastQueryTime >= OBD_POLL_INTERVAL)
+  {
+    lastQueryTime = now;
+
+    switch (queryStep)
     {
+    case 0:
       obdWrite(CMD_RPM, sizeof(CMD_RPM));
-    }
-    else
-    {
+      break;
+    case 1:
       obdWrite(CMD_MAP, sizeof(CMD_MAP));
+      break;
+    case 2:
+      obdWrite(CMD_SPEED, sizeof(CMD_SPEED));
+      break;
+    case 3:
+      obdWrite(CMD_RPM, sizeof(CMD_RPM));
+      break;
+    case 4:
+      obdWrite(CMD_MAP, sizeof(CMD_MAP));
+      break;
+    case 5:
+      if (slowToggle)
+      {
+        obdWrite(CMD_TEMP, sizeof(CMD_TEMP));
+      }
+      else
+      {
+        obdWrite(CMD_FUEL, sizeof(CMD_FUEL));
+      }
+      slowToggle = !slowToggle;
+      break;
     }
-    pollRpmNext = !pollRpmNext;
-  }
 
-  // medium-changing values
-  if (now - lastMedium >= MEDIUM_INTERVAL)
-  {
-    lastMedium = now;
-
-    delay(100);
-    obdWrite(CMD_SPEED, sizeof(CMD_SPEED));
-  }
-
-  // Slow-changing values
-  if (now - lastSlow >= SLOW_INTERVAL)
-  {
-    lastSlow = now;
-
-    delay(100);
-    obdWrite(CMD_FUEL, sizeof(CMD_FUEL));
-    delay(100);
-    obdWrite(CMD_TEMP, sizeof(CMD_TEMP));
-    delay(100);
+    queryStep = (queryStep + 1) % 6;
   }
 }

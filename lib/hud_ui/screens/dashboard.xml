@@ -9,7 +9,7 @@
 		/>
 		<style
 			name="style_arc_indicator"
-			arc_width="30"
+			arc_width="7"
 			arc_rounded="false"
 			arc_color="0xffffff"
 		/>

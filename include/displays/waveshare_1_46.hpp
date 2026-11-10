@@ -62,6 +62,30 @@ public:
         // 4. Setup Touch Interrupt Pin
         pinMode(TP_INT, INPUT_PULLUP);
 
+        // Initialize SPD2010 Touch controller
+        static const uint8_t cpu_start[2]  = { 0x01, 0x00 };
+        static const uint8_t point_mode[2] = { 0x00, 0x00 };
+        static const uint8_t start[2]      = { 0x00, 0x00 };
+
+        clearInt();
+        delay(5);
+        writeCommand(0x0004, cpu_start, 2);
+        delay(5);
+        writeCommand(0x0050, point_mode, 2);
+        delay(5);
+        writeCommand(0x0046, start, 2);
+        delay(5);
+        clearInt();
+
+        // Drain any pending boot interrupt
+        for (int i = 0; i < 5 && digitalRead(TP_INT) == LOW; i++)
+        {
+            uint8_t dummy[4];
+            readRegister(0x0020, dummy, 4);
+            clearInt();
+            delay(10);
+        }
+
         // 5. Initialize Display
         bool state = gfx->begin();
         return state;
@@ -141,51 +165,73 @@ public:
             return false;
         }
 
-        // Request 7 bytes touch report from SPD2010 (address 0x53)
-        // Reg pointer 0x0001
-        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
-        Wire.write(0x00);
-        Wire.write(0x01);
-        if (Wire.endTransmission(false) != 0)
+        uint8_t status[4] = {0};
+        if (!readRegister(0x0020, status, 4))
         {
-            // Direct read fallback if command phase not used
-            Wire.requestFrom((uint8_t)SPD2010_TOUCH_ADDR, (size_t)7);
-        }
-        else
-        {
-            Wire.requestFrom((uint8_t)SPD2010_TOUCH_ADDR, (size_t)7);
-        }
-
-        if (Wire.available() < 7)
-        {
-            while (Wire.available()) Wire.read();
+            clearInt();
             return false;
         }
 
-        uint8_t count   = Wire.read();
-        uint8_t gesture = Wire.read();
-        uint8_t b2      = Wire.read();
-        uint8_t b3      = Wire.read();
-        uint8_t b4      = Wire.read();
-        uint8_t b5      = Wire.read();
-        uint8_t weight  = Wire.read();
-
-        if (count == 0 || weight == 0)
+        // If I2C bus returned idle pullup values (0xFF), no valid device response
+        if (status[0] == 0xFF && status[1] == 0xFF && status[2] == 0xFF && status[3] == 0xFF)
         {
             return false;
         }
 
-        uint16_t raw_x = ((uint16_t)b3 << 8) | b2;
-        uint16_t raw_y = ((uint16_t)b5 << 8) | b4;
+        // Check if chip is in BIOS or CPU transition state
+        static const uint8_t cpu_start[2]  = { 0x01, 0x00 };
+        static const uint8_t point_mode[2] = { 0x00, 0x00 };
+        static const uint8_t start[2]      = { 0x00, 0x00 };
 
-        if (raw_x >= SCREEN_WIDTH && (((uint16_t)b2 << 8) | b3) < SCREEN_WIDTH)
+        bool tic_in_bios = (status[0] & 0x02) != 0;
+        bool tic_in_cpu  = (status[0] & 0x04) != 0;
+
+        if (tic_in_bios)
         {
-            raw_x = ((uint16_t)b2 << 8) | b3;
-            raw_y = ((uint16_t)b4 << 8) | b5;
+            clearInt();
+            writeCommand(0x0004, cpu_start, 2);
+            return false;
+        }
+        if (tic_in_cpu)
+        {
+            writeCommand(0x0050, point_mode, 2);
+            writeCommand(0x0046, start, 2);
+            clearInt();
+            return false;
         }
 
-        if (raw_x >= SCREEN_WIDTH) raw_x = SCREEN_WIDTH - 1;
-        if (raw_y >= SCREEN_HEIGHT) raw_y = SCREEN_HEIGHT - 1;
+        bool pt_exist = (status[0] & 0x01) != 0;
+        uint16_t read_len = (uint16_t)status[2] | ((uint16_t)status[3] << 8);
+
+        if (!pt_exist || read_len < 10)
+        {
+            clearInt();
+            return false;
+        }
+
+        uint8_t buf[16] = {0};
+        uint8_t to_read = (read_len > 16) ? 16 : (uint8_t)read_len;
+        if (!readRegister(0x0300, buf, to_read))
+        {
+            clearInt();
+            return false;
+        }
+
+        clearInt(); // Acknowledge and release INT
+
+        uint8_t weight = buf[8];
+        if (weight == 0 || weight == 0xFF)
+        {
+            return false;
+        }
+
+        uint16_t raw_x = (((uint16_t)(buf[7] & 0xF0)) << 4) | (uint16_t)buf[5];
+        uint16_t raw_y = (((uint16_t)(buf[7] & 0x0F)) << 8) | (uint16_t)buf[6];
+
+        if (raw_x >= SCREEN_WIDTH || raw_y >= SCREEN_HEIGHT)
+        {
+            return false;
+        }
 
         if (flip_x)
         {
@@ -204,6 +250,51 @@ public:
 private:
     bool flip_x = false;
     bool flip_y = false;
+
+    bool writeCommand(uint16_t reg, const uint8_t *data, size_t len)
+    {
+        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
+        Wire.write((uint8_t)(reg & 0xFF));
+        Wire.write((uint8_t)(reg >> 8));
+        for (size_t i = 0; i < len; i++)
+        {
+            Wire.write(data[i]);
+        }
+        return (Wire.endTransmission() == 0);
+    }
+
+    bool readRegister(uint16_t reg, uint8_t *data, size_t len)
+    {
+        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
+        Wire.write((uint8_t)(reg & 0xFF));
+        Wire.write((uint8_t)(reg >> 8));
+        if (Wire.endTransmission() != 0)
+        {
+            return false;
+        }
+
+        uint8_t read_bytes = Wire.requestFrom((uint8_t)SPD2010_TOUCH_ADDR, (size_t)len);
+        if (read_bytes < len)
+        {
+            while (Wire.available()) Wire.read();
+            return false;
+        }
+
+        for (size_t i = 0; i < len; i++)
+        {
+            data[i] = Wire.read();
+        }
+        return true;
+    }
+
+    void clearInt()
+    {
+        static const uint8_t ack[2]  = { 0x01, 0x00 };
+        static const uint8_t rear[2] = { 0x00, 0x00 };
+        writeCommand(0x0002, ack, 2);
+        delayMicroseconds(200);
+        writeCommand(0x0002, rear, 2);
+    }
 };
 
 DisplayWrapper tft;
