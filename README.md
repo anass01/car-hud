@@ -2,6 +2,8 @@
 
 A modern, high-performance automotive Head-Up Display (HUD) and digital instrument cluster running on ESP32-S3 round displays. Communicates with the vehicle ECU over Bluetooth Low Energy (BLE) via an ELM327 OBD-II adapter using ISO 15765-4 (CAN 11-bit 500k) protocol and renders telemetry with **LVGL 9**.
 
+![Dashboard](images/dashboard.png)
+
 ---
 
 ## ✨ Features
