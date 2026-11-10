@@ -36,6 +36,7 @@
 #include "hud_ui.h"
 #include <NimBLEDevice.h>
 #include <Timber.h>
+#include "qmi8658.hpp"
 
 #define LVGL_LOCK() xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY)
 #define LVGL_UNLOCK() xSemaphoreGiveRecursive(lvgl_mutex)
@@ -55,22 +56,27 @@
   } while (0)
 
 /* ---------- OBD COMMANDS (ASCII + CR) ---------- */
+// Trailing '1' tells ELM327 to expect 1 response and return immediately without waiting for timeout
 const uint8_t CMD_ATZ[] = {0x41, 0x54, 0x5A, 0x0D};               // Reset (ATZ)
 const uint8_t CMD_ATE0[] = {0x41, 0x54, 0x45, 0x30, 0x0D};        // Echo off (ATE0)
 const uint8_t CMD_ATSP6[] = {0x41, 0x54, 0x53, 0x50, 0x36, 0x0D}; // Set protocol to CAN 11/500 (ATSP6)
 
-const uint8_t CMD_SPEED[] = {0x30, 0x31, 0x30, 0x44, 0x0D}; // Vehicle speed (010D)
-const uint8_t CMD_RPM[] = {0x30, 0x31, 0x30, 0x43, 0x0D};   // Engine RPM (010C)
-const uint8_t CMD_MAP[] = {0x30, 0x31, 0x30, 0x42, 0x0D};   // Intake Manifold Absolute Pressure / Turbo MAP (010B)
-const uint8_t CMD_FUEL[] = {0x30, 0x31, 0x32, 0x46, 0x0D};  // Fuel Capacity (012F)
-const uint8_t CMD_TEMP[] = {0x30, 0x31, 0x30, 0x35, 0x0D};  // Coolant Temperature (0105)
+const uint8_t CMD_SPEED[] = {0x30, 0x31, 0x30, 0x44, 0x31, 0x0D};     // Vehicle speed (010D1)
+const uint8_t CMD_RPM[] = {0x30, 0x31, 0x30, 0x43, 0x31, 0x0D};       // Engine RPM (010C1)
+const uint8_t CMD_LOAD[] = {0x30, 0x31, 0x30, 0x34, 0x31, 0x0D};      // Engine Load % (01041)
+const uint8_t CMD_MAP[] = {0x30, 0x31, 0x30, 0x42, 0x31, 0x0D};       // Intake Manifold Absolute Pressure / Turbo MAP (010B1)
+const uint8_t CMD_FUEL_RATE[] = {0x30, 0x31, 0x35, 0x45, 0x31, 0x0D}; // Engine fuel rate L/h (015E1)
+const uint8_t CMD_MAF[] = {0x30, 0x31, 0x31, 0x30, 0x31, 0x0D};       // Mass Air Flow Sensor (01101)
+const uint8_t CMD_TEMP[] = {0x30, 0x31, 0x30, 0x35, 0x31, 0x0D};      // Coolant Temperature (01051)
+const uint8_t CMD_IAT[] = {0x30, 0x31, 0x30, 0x46, 0x31, 0x0D};       // Intake Air Temperature (010F1)
+
+static QMI8658 imu;
 
 Preferences prefs;
 HWCDC USBSerial;
 
 /* ---------- LVGL DISPLAY ---------- */
 uint8_t lv_buffer[2][LV_BUFFER_SIZE];
-lv_obj_t *boot_screen;
 lv_obj_t *dashboard_screen;
 lv_obj_t *settings_screen;
 SemaphoreHandle_t lvgl_mutex;
@@ -134,9 +140,112 @@ String formatHexString(
   return out;
 }
 
+static float latest_rpm = 0.0f;
+static float current_fuel_lph = -1.0f;
+static float latest_engine_load = 15.0f; // Typical idle load for Hyundai 1.5 CRDi
+static bool sweep_active = true;
+
+void updateFuelConsumption();
+
+// Fuel rate calculation for Hyundai Accent 1.5 CRDi (D4FA 4-cyl 16V, Bosch EDC16)
+void setDisconnectedDefaults()
+{
+  latest_rpm = 0.0f;
+  latest_engine_load = 0.0f;
+  current_fuel_lph = -1.0f;
+
+  LVGL_EXEC({
+    lv_subject_set_int(&speed, 0);
+    lv_subject_copy_string(&speed_str, "--");
+
+    lv_subject_set_int(&coolant_temp, 0);
+    lv_subject_copy_string(&coolant_temp_str, "--");
+
+    lv_subject_set_int(&engine_rpm, 0);
+    lv_subject_copy_string(&engine_rpm_str, "--");
+
+    lv_subject_set_int(&turbo_boost, 0);
+    lv_subject_copy_string(&turbo_boost_str, "-- bar");
+
+    lv_subject_set_int(&intake_temp, 0);
+    lv_subject_copy_string(&intake_temp_str, "--°C");
+
+    lv_subject_set_int(&fuel_consumption, 0);
+    lv_subject_copy_string(&fuel_consumption_val_str, "--");
+    lv_subject_copy_string(&fuel_consumption_str, "-- L/100km");
+
+    lv_subject_set_int(&con_error, 1);
+  });
+}
+
+// Injected fuel per stroke (mg) = load_pct * 0.52 mg (max ~52 mg at 100% load)
+// 4-cylinder 4-stroke = 2 injections per rev = 2 * RPM * InjQty mg/min
+// In L/h = (InjQty_mg * 2 * RPM * 60) / (Diesel_density_835 * 1000)
+// Conversion factor = (0.52 * 2 * 60) / (835 * 1000) = 0.00007473f
+void updateDieselFuelRate()
+{
+  int rpm = lv_subject_get_int(&engine_rpm);
+  if (rpm < 350)
+  {
+    current_fuel_lph = 0.0f;
+  }
+  else
+  {
+    float lph = latest_engine_load * (float)rpm * 0.00007473f;
+    if (lph < 0.2f)
+      lph = 0.2f;
+    current_fuel_lph = lph;
+  }
+  updateFuelConsumption();
+}
+
+void updateFuelConsumption()
+{
+  if (current_fuel_lph < 0.0f)
+    return;
+
+  int spd = lv_subject_get_int(&speed);
+  char buf[32];
+  char val_buf[16];
+  char unit_buf[16];
+  int arc_val = 0;
+
+  if (spd > 3)
+  {
+    // In motion: calculate L/100km
+    float l_100km = (current_fuel_lph / (float)spd) * 100.0f;
+    if (l_100km > 35.0f)
+      l_100km = 35.0f; // clamp to 35.0 L/100km for gauge arc
+    arc_val = (int)(l_100km + 0.5f); // 0 to 35 for the arc
+    snprintf(buf, sizeof(buf), "%.1f L/100km", l_100km);
+    snprintf(val_buf, sizeof(val_buf), "%.1f", l_100km);
+    snprintf(unit_buf, sizeof(unit_buf), "L/100km");
+  }
+  else
+  {
+    // Stationary / Idle: display L/h
+    arc_val = (int)(current_fuel_lph + 0.5f);
+    if (arc_val > 35)
+      arc_val = 35;
+    snprintf(buf, sizeof(buf), "%.1f L/h", current_fuel_lph);
+    snprintf(val_buf, sizeof(val_buf), "%.1f", current_fuel_lph);
+    snprintf(unit_buf, sizeof(unit_buf), "L/h");
+  }
+
+  LVGL_EXEC({
+    lv_subject_set_int(&fuel_consumption, arc_val);
+    lv_subject_copy_string(&fuel_consumption_str, buf);
+    lv_subject_copy_string(&fuel_consumption_val_str, val_buf);
+    lv_subject_copy_string(&fuel_consumption_unit_str, unit_buf);
+  });
+}
+
 /* ---------- SIMPLE PARSER ---------- */
 void parseObd(const uint8_t *data, size_t len)
 {
+  if (sweep_active)
+    return;
+
   if (len < 4)
     return;
 
@@ -189,10 +298,26 @@ void parseObd(const uint8_t *data, size_t len)
 
   switch (pid)
   {
+  case 0x04: // Engine Load (0 to 100%)
+  {
+    float load_pct = (float)A * 100.0f / 255.0f;
+    latest_engine_load = load_pct;
+    Timber.i("Engine Load: %.1f %%\n", load_pct);
+    updateDieselFuelRate();
+    break;
+  }
+
   case 0x0D: // Speed
   {
     Timber.i("Speed: %u km/h\n", A);
-    LVGL_EXEC(lv_subject_set_int(&speed, (int)A));
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u", A);
+    LVGL_EXEC({
+      lv_subject_set_int(&speed, (int)A);
+      lv_subject_copy_string(&speed_str, buf);
+      lv_subject_set_int(&con_error, 0);
+    });
+    updateFuelConsumption();
     break;
   }
 
@@ -200,7 +325,15 @@ void parseObd(const uint8_t *data, size_t len)
   {
     float rpm = ((A << 8) | B) / 4.0f;
     Timber.i("RPM: %.0f\n", rpm);
-    LVGL_EXEC(lv_subject_set_int(&engine_rpm, (int)rpm));
+    latest_rpm = rpm;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.0f", rpm);
+    LVGL_EXEC({
+      lv_subject_set_int(&engine_rpm, (int)rpm);
+      lv_subject_copy_string(&engine_rpm_str, buf);
+      lv_subject_set_int(&con_error, 0);
+    });
+    updateDieselFuelRate();
     break;
   }
 
@@ -236,13 +369,29 @@ void parseObd(const uint8_t *data, size_t len)
     break;
   }
 
-  case 0x2F: // Fuel Tank Level
+  case 0x10: // MAF (Mass Air Flow sensor in g/s)
   {
-    float fuel_pct = (A * 100.0f) / 255.0f;
-    int litres = (int)((fuel_pct * 45.0f) / 100.0f + 0.5f); // Hyundai Accent MC 45L tank
-    Timber.i("Fuel: %.1f %% (%d L)\n", fuel_pct, litres);
-    prefs.putInt("fuel_level", litres);
-    LVGL_EXEC(lv_subject_set_int(&fuel_capacity, litres));
+    float maf_gps = ((A << 8) | B) / 100.0f;
+    Timber.i("MAF: %.2f g/s\n", maf_gps);
+    // On Hyundai 1.5 CRDi diesel, AFR varies with load from ~55:1 at idle to ~20:1 under boost
+    float afr = 18.0f + (100.0f - latest_engine_load) * 0.40f;
+    if (afr < 18.0f) afr = 18.0f;
+    if (afr > 65.0f) afr = 65.0f;
+    float lph = (maf_gps * 3600.0f) / (afr * 835.0f);
+    if (lph > 0.1f)
+    {
+      current_fuel_lph = lph;
+      updateFuelConsumption();
+    }
+    break;
+  }
+
+  case 0x5E: // Direct Engine Fuel Rate (L/h)
+  {
+    uint16_t raw = (A << 8) | B;
+    current_fuel_lph = raw * 0.05f;
+    Timber.i("Fuel Rate from PID 015E: %.2f L/h\n", current_fuel_lph);
+    updateFuelConsumption();
     break;
   }
 
@@ -250,7 +399,26 @@ void parseObd(const uint8_t *data, size_t len)
   {
     float temp = A - 40.0f;
     Timber.i("Coolant: %.1f C\n", temp);
-    LVGL_EXEC(lv_subject_set_int(&coolant_temp, (int)temp));
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.0f", temp);
+    LVGL_EXEC({
+      lv_subject_set_int(&coolant_temp, (int)temp);
+      lv_subject_copy_string(&coolant_temp_str, buf);
+      lv_subject_set_int(&con_error, 0);
+    });
+    break;
+  }
+
+  case 0x0F: // Intake Air Temperature (IAT)
+  {
+    float iat = A - 40.0f;
+    Timber.i("Intake Temp: %.0f C\n", iat);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.0f°C", iat);
+    LVGL_EXEC({
+      lv_subject_set_int(&intake_temp, (int)iat);
+      lv_subject_copy_string(&intake_temp_str, buf);
+    });
     break;
   }
   }
@@ -274,7 +442,7 @@ class ClientCallbacks : public NimBLEClientCallbacks
   void onDisconnect(NimBLEClient *pClient, int reason) override
   {
     Timber.v("Disconnected");
-    LVGL_EXEC(lv_subject_set_int(&con_error, 1));
+    setDisconnectedDefaults();
     obdChar = nullptr;
 
     if (should_restart)
@@ -298,13 +466,32 @@ class ClientCallbacks : public NimBLEClientCallbacks
 } clientCallbacks;
 
 /* ---------- NOTIFY CALLBACK ---------- */
+static char rx_line_buf[128];
+static size_t rx_line_pos = 0;
+
 void notifyCB(NimBLERemoteCharacteristic *pRemoteCharacteristic, uint8_t *data, size_t len, bool isNotify)
 {
-
-  if (isNotify)
+  if (isNotify && data && len > 0)
   {
     Timber.v(formatHexString(data, len, false));
-    parseObd(data, len);
+
+    for (size_t i = 0; i < len; i++)
+    {
+      char c = (char)data[i];
+      if (c == '\r' || c == '\n' || c == '>')
+      {
+        if (rx_line_pos > 0)
+        {
+          rx_line_buf[rx_line_pos] = '\0';
+          parseObd((const uint8_t *)rx_line_buf, rx_line_pos);
+          rx_line_pos = 0;
+        }
+      }
+      else if (rx_line_pos < sizeof(rx_line_buf) - 1)
+      {
+        rx_line_buf[rx_line_pos++] = c;
+      }
+    }
   }
 }
 
@@ -367,14 +554,6 @@ void obdWrite(const uint8_t *cmd, size_t len)
 }
 
 /* ---------- LVGL DISPLAY & TOUCH DRIVER ---------- */
-/*Convert rotation number to lvgl rotation type*/
-lv_display_rotation_t get_rotation(uint8_t rotation)
-{
-  if (rotation > 3)
-    return LV_DISPLAY_ROTATION_0;
-  return (lv_display_rotation_t)rotation;
-}
-
 /* Display flushing */
 void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *data)
 {
@@ -434,6 +613,11 @@ void rounder_event_cb(lv_event_t *e)
 #endif
   area->y1 = (y1 >> 1) << 1;
   area->y2 = ((y2 >> 1) << 1) + 1;
+
+  if (area->x1 < 0) area->x1 = 0;
+  if (area->y1 < 0) area->y1 = 0;
+  if (area->x2 >= SCREEN_WIDTH) area->x2 = SCREEN_WIDTH - 1;
+  if (area->y2 >= SCREEN_HEIGHT) area->y2 = SCREEN_HEIGHT - 1;
 }
 
 /*Read the touchpad*/
@@ -460,22 +644,6 @@ static uint32_t my_tick(void)
 {
   return millis();
 }
-
-// void on_rotation_change(lv_observer_t *observer, lv_subject_t *subject)
-// {
-//   int32_t rotation = lv_subject_get_int(subject);
-
-// #ifdef SW_ROTATION
-//   lv_display_set_rotation(lv_display_get_default(), get_rotation(rotation));
-// #else
-//   tft.setRotation(rotation);
-//   // screen rotation has changed, invalidate to redraw
-//   lv_obj_invalidate(lv_screen_active());
-// #endif
-
-// prefs.putInt("rotation", rotation);
-
-// }
 
 void on_brightness_change(lv_observer_t *observer, lv_subject_t *subject)
 {
@@ -523,37 +691,10 @@ void logCallback(Level level, unsigned long time, String message)
 
 void setup()
 {
-
   USBSerial.begin(115200);
 
   Timber.setColors(true);
   Timber.setLogCallback(logCallback);
-
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause(); // get wake up reason
-
-  bool show_boot = true;
-
-  switch (wakeup_reason)
-  {
-  case ESP_SLEEP_WAKEUP_TIMER:
-    Timber.i("Wakeup caused by timer");
-    show_boot = false;
-    break;
-  case ESP_SLEEP_WAKEUP_EXT0:
-    Timber.i("Wakeup caused by RTC alarm");
-    show_boot = true;
-    break;
-  case ESP_SLEEP_WAKEUP_EXT1:
-    Timber.i("Wakeup caused by Button press");
-    show_boot = false;
-    break;
-  case ESP_SLEEP_WAKEUP_UNDEFINED:
-    Timber.i("Wakeup was not caused by deep sleep");
-    break;
-  default:
-    Timber.i("Wakeup was not caused by deep sleep: %d", wakeup_reason);
-    break;
-  }
 
 #ifdef ELECROW_C3
   elecrow_c3_init();
@@ -565,6 +706,15 @@ void setup()
   tft.initDMA();
   tft.startWrite();
   tft.fillScreen(0x0000);
+
+  if (imu.begin())
+  {
+    Timber.i("QMI8658 6-axis IMU detected at 0x%02X", imu.i2c_addr);
+  }
+  else
+  {
+    Timber.w("QMI8658 IMU not found, using speed acceleration for G-forces");
+  }
 
   lv_init();
 
@@ -588,7 +738,6 @@ void setup()
   /* This mutex is used to protect the LVGL library from concurrent access */
   lvgl_mutex = xSemaphoreCreateRecursiveMutex();
 
-  int rotation = prefs.getInt("rotation", 0);
   int brightness = prefs.getInt("brightness", 128);
   int hud = prefs.getInt("hud", 0);
   int restart = prefs.getInt("restart", 0);
@@ -597,28 +746,17 @@ void setup()
 
   tft.setBrightness((uint8_t)brightness);
   tft.setFlipMode(hud);
-  // #ifdef SW_ROTATION
-  //   lv_display_set_rotation(lv_display, get_rotation(rotation));
-  // #else
-  //   tft.setRotation(rotation);
-  // #endif
 
   hud_ui_init("");
 
-  int fuel_level = prefs.getInt("fuel_level", 45); // Default to 45L full tank for Hyundai Accent MC
-  LVGL_EXEC(lv_subject_set_int(&fuel_capacity, fuel_level));
-
-  // lv_subject_set_int(&settings_rotation, rotation);
   lv_subject_set_int(&settings_brightness, brightness);
   lv_subject_set_int(&settings_hud, hud);
   lv_subject_set_int(&settings_restart, restart);
 
-  // lv_subject_add_observer(&settings_rotation, on_rotation_change, NULL);
   lv_subject_add_observer(&settings_brightness, on_brightness_change, NULL);
   lv_subject_add_observer(&settings_hud, on_hud_change, NULL);
   lv_subject_add_observer(&settings_restart, on_restart_change, NULL);
 
-  boot_screen = boot_create();
   dashboard_screen = dashboard_create();
   settings_screen = settings_create();
 
@@ -635,20 +773,11 @@ void setup()
     lv_obj_add_event_cb(settings_restart, on_restart_cb, LV_EVENT_CLICKED, NULL);
   }
 
-  lv_obj_add_screen_load_event(boot_screen, LV_EVENT_SCREEN_LOADED, dashboard_screen,
-                               LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 3000);
   lv_obj_add_screen_load_event(dashboard_screen, LV_EVENT_LONG_PRESSED, settings_screen,
                                LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 0);
   // Settings back button navigates back to dashboard; avoid long-press loop on settings_screen
 
-  if (show_boot)
-  {
-    lv_screen_load(boot_screen);
-  }
-  else
-  {
-    lv_screen_load(dashboard_screen);
-  }
+  lv_screen_load(dashboard_screen);
 
   /* BLE Setup */
   NimBLEDevice::init("");
@@ -665,6 +794,60 @@ void loop()
   LVGL_EXEC(lv_timer_handler()); // Update the UI
   delay(5);
 
+  uint32_t now = millis();
+
+  // Startup gauge sweep animation (~1.4s)
+  static uint32_t sweep_start_time = 0;
+  static uint32_t last_sweep_frame = 0;
+
+  if (sweep_active)
+  {
+    if (sweep_start_time == 0)
+    {
+      sweep_start_time = now;
+      last_sweep_frame = now;
+    }
+    uint32_t elapsed = now - sweep_start_time;
+    const uint32_t SWEEP_HALF = 700;
+    const uint32_t SWEEP_TOTAL = 1400;
+
+    if (elapsed < SWEEP_TOTAL)
+    {
+      // Throttle sweep to ~30 FPS (every 33ms) so frame pushes finish cleanly without tearing
+      if (now - last_sweep_frame >= 33)
+      {
+        last_sweep_frame = now;
+
+        float factor;
+        if (elapsed < SWEEP_HALF)
+        {
+          float p = (float)elapsed / (float)SWEEP_HALF; // 0.0 to 1.0
+          factor = 0.5f * (1.0f - cosf(p * 3.14159265f));
+        }
+        else
+        {
+          float p = (float)(elapsed - SWEEP_HALF) / (float)SWEEP_HALF; // 0.0 to 1.0
+          factor = 0.5f * (1.0f + cosf(p * 3.14159265f));
+        }
+
+        int sw_rpm = (int)(factor * 5000.0f);
+        int sw_turbo = (int)(factor * 250.0f);
+        int sw_fuel = (int)(factor * 35.0f);
+
+        LVGL_EXEC({
+          lv_subject_set_int(&engine_rpm, sw_rpm);
+          lv_subject_set_int(&turbo_boost, sw_turbo);
+          lv_subject_set_int(&fuel_consumption, sw_fuel);
+        });
+      }
+    }
+    else
+    {
+      sweep_active = false;
+      setDisconnectedDefaults();
+    }
+  }
+
   if (obdDevice && !client)
   {
     if (connectObd())
@@ -679,16 +862,58 @@ void loop()
     }
   }
 
-  uint32_t now = millis();
+  // Update G-Forces every 100ms
+  static uint32_t lastGUpdateTime = 0;
+  static float filtered_g = 0.0f;
+  static float last_speed_kmh = 0.0f;
+  static uint32_t last_speed_time = 0;
+
+  if (now - lastGUpdateTime >= 100)
+  {
+    lastGUpdateTime = now;
+    float current_g = 0.0f;
+    int current_speed = lv_subject_get_int(&speed);
+    bool is_stopped = (current_speed <= 2);
+
+    if (imu.detected && imu.update(is_stopped))
+    {
+      current_g = imu.g_total;
+      filtered_g = filtered_g * 0.7f + current_g * 0.3f;
+    }
+    else
+    {
+      if (last_speed_time > 0 && now > last_speed_time)
+      {
+        float dt = (float)(now - last_speed_time) / 1000.0f;
+        if (dt > 0.05f)
+        {
+          float dv = (float)current_speed - last_speed_kmh;
+          float acc_g = (dv / 3.6f) / (dt * 9.81f);
+          current_g = fabsf(acc_g);
+          filtered_g = filtered_g * 0.8f + current_g * 0.2f;
+        }
+      }
+      last_speed_kmh = (float)current_speed;
+      last_speed_time = now;
+    }
+
+    if (filtered_g < 0.03f)
+      filtered_g = 0.0f;
+    if (filtered_g > 2.5f)
+      filtered_g = 2.5f;
+
+    char g_buf[16];
+    snprintf(g_buf, sizeof(g_buf), "%.2f G", filtered_g);
+    LVGL_EXEC(lv_subject_copy_string(&g_force_str, g_buf));
+  }
 
   if (!obdChar)
     return;
 
   // Poll OBD sequentially: one command every 75ms
-  // Cycle: RPM -> MAP (Boost) -> SPEED -> RPM -> MAP (Boost) -> SLOW (FUEL / TEMP)
+  // Fast cycle: RPM, MAP (Boost), LOAD, SPEED, TEMP, IAT, MAF, FUEL_RATE
   static uint32_t lastQueryTime = 0;
   static uint8_t queryStep = 0;
-  static bool slowToggle = false;
   const uint32_t OBD_POLL_INTERVAL = 75; // 75 ms between commands
 
   if (now - lastQueryTime >= OBD_POLL_INTERVAL)
@@ -704,27 +929,37 @@ void loop()
       obdWrite(CMD_MAP, sizeof(CMD_MAP));
       break;
     case 2:
-      obdWrite(CMD_SPEED, sizeof(CMD_SPEED));
+      obdWrite(CMD_LOAD, sizeof(CMD_LOAD));
       break;
     case 3:
-      obdWrite(CMD_RPM, sizeof(CMD_RPM));
+      obdWrite(CMD_SPEED, sizeof(CMD_SPEED));
       break;
     case 4:
-      obdWrite(CMD_MAP, sizeof(CMD_MAP));
+      obdWrite(CMD_RPM, sizeof(CMD_RPM));
       break;
     case 5:
-      if (slowToggle)
-      {
-        obdWrite(CMD_TEMP, sizeof(CMD_TEMP));
-      }
-      else
-      {
-        obdWrite(CMD_FUEL, sizeof(CMD_FUEL));
-      }
-      slowToggle = !slowToggle;
+      obdWrite(CMD_MAP, sizeof(CMD_MAP));
+      break;
+    case 6:
+      obdWrite(CMD_LOAD, sizeof(CMD_LOAD));
+      break;
+    case 7:
+      obdWrite(CMD_TEMP, sizeof(CMD_TEMP));
+      break;
+    case 8:
+      obdWrite(CMD_RPM, sizeof(CMD_RPM));
+      break;
+    case 9:
+      obdWrite(CMD_IAT, sizeof(CMD_IAT));
+      break;
+    case 10:
+      obdWrite(CMD_MAF, sizeof(CMD_MAF));
+      break;
+    case 11:
+      obdWrite(CMD_FUEL_RATE, sizeof(CMD_FUEL_RATE));
       break;
     }
 
-    queryStep = (queryStep + 1) % 6;
+    queryStep = (queryStep + 1) % 12;
   }
 }

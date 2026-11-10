@@ -13,8 +13,7 @@ list(
   ${CMAKE_CURRENT_LIST_DIR}/images/hud_data.c
   ${CMAKE_CURRENT_LIST_DIR}/images/restart_data.c
   ${CMAKE_CURRENT_LIST_DIR}/images/rotation_data.c
-  ${CMAKE_CURRENT_LIST_DIR}/images/subaru_logo_data.c
+  ${CMAKE_CURRENT_LIST_DIR}/images/turbo_data.c
   ${CMAKE_CURRENT_LIST_DIR}/images/warning_data.c
-  ${CMAKE_CURRENT_LIST_DIR}/screens/boot_gen.c
   ${CMAKE_CURRENT_LIST_DIR}/screens/dashboard_gen.c
   ${CMAKE_CURRENT_LIST_DIR}/screens/settings_gen.c)

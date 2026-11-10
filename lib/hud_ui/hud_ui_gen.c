@@ -59,8 +59,6 @@ extern lv_font_t roboto_bold_150_data;
  *----------------*/
 
 /* Targets: any */
-const void * subaru_logo = NULL;
-extern const void * subaru_logo_data;
 const void * rotation = NULL;
 extern const void * rotation_data;
 const void * brightness = NULL;
@@ -75,6 +73,8 @@ const void * back = NULL;
 extern const void * back_data;
 const void * restart = NULL;
 extern const void * restart_data;
+const void * turbo = NULL;
+extern const void * turbo_data;
 
 /*----------------
  * Global styles
@@ -87,11 +87,20 @@ lv_style_t style_dark;
  *----------------*/
 
 lv_subject_t engine_rpm;
+lv_subject_t engine_rpm_str;
 lv_subject_t coolant_temp;
+lv_subject_t coolant_temp_str;
 lv_subject_t speed;
-lv_subject_t fuel_capacity;
+lv_subject_t speed_str;
+lv_subject_t fuel_consumption;
+lv_subject_t fuel_consumption_str;
+lv_subject_t fuel_consumption_val_str;
+lv_subject_t fuel_consumption_unit_str;
 lv_subject_t turbo_boost;
 lv_subject_t turbo_boost_str;
+lv_subject_t intake_temp;
+lv_subject_t intake_temp_str;
+lv_subject_t g_force_str;
 lv_subject_t can_error;
 lv_subject_t con_error;
 lv_subject_t settings_brightness;
@@ -146,10 +155,6 @@ void hud_ui_init_gen(const char * asset_path)
     /* Targets: any */
     #if HUD_UI_CHECK_COMPILE_TARGET(HUD_UI_TARGET_ALL)
     if (hud_ui_check_target(HUD_UI_TARGET_ALL)) {
-        /* subaru_logo */
-        if (!subaru_logo) {
-            subaru_logo = &subaru_logo_data;
-        }
         /* rotation */
         if (!rotation) {
             rotation = &rotation_data;
@@ -178,6 +183,10 @@ void hud_ui_init_gen(const char * asset_path)
         if (!restart) {
             restart = &restart_data;
         }
+        /* turbo */
+        if (!turbo) {
+            turbo = &turbo_data;
+        }
     }
     #endif
 
@@ -191,7 +200,7 @@ void hud_ui_init_gen(const char * asset_path)
         /*Init all styles*/
         lv_style_init(&style_dark);
 
-        lv_style_set_bg_color(&style_dark, lv_color_hex(0x000000));
+        lv_style_set_bg_color(&style_dark, lv_color_hex(0x1f222a));
         lv_style_set_bg_opa(&style_dark, 255);
         lv_style_set_text_color(&style_dark, lv_color_hex(0xffffff));
         lv_style_set_text_font(&style_dark, roboto_regular_24);
@@ -203,16 +212,51 @@ void hud_ui_init_gen(const char * asset_path)
      * Subjects
      *----------------*/
     lv_subject_init_int(&engine_rpm, 0);
+    static char engine_rpm_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char engine_rpm_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&engine_rpm_str, engine_rpm_str_buf, engine_rpm_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "--");
     lv_subject_init_int(&coolant_temp, 0);
+    static char coolant_temp_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char coolant_temp_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&coolant_temp_str, coolant_temp_str_buf, coolant_temp_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "--");
     lv_subject_init_int(&speed, 0);
-    lv_subject_init_int(&fuel_capacity, 0);
+    static char speed_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char speed_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&speed_str, speed_str_buf, speed_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "--");
+    lv_subject_init_int(&fuel_consumption, 0);
+    lv_subject_set_min_value_int(&fuel_consumption, 0);
+    lv_subject_set_max_value_int(&fuel_consumption, 35);
+    static char fuel_consumption_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char fuel_consumption_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&fuel_consumption_str, fuel_consumption_str_buf, fuel_consumption_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "-- L/100km");
+    static char fuel_consumption_val_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char fuel_consumption_val_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&fuel_consumption_val_str, fuel_consumption_val_str_buf, fuel_consumption_val_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "--");
+    static char fuel_consumption_unit_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char fuel_consumption_unit_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&fuel_consumption_unit_str, fuel_consumption_unit_str_buf, fuel_consumption_unit_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "L/100km");
     lv_subject_init_int(&turbo_boost, 0);
     lv_subject_set_min_value_int(&turbo_boost, 0);
     lv_subject_set_max_value_int(&turbo_boost, 250);
     static char turbo_boost_str_buf[UI_SUBJECT_STRING_LENGTH];
     static char turbo_boost_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
     lv_subject_init_string(&turbo_boost_str, turbo_boost_str_buf, turbo_boost_str_prev_buf,
-                           UI_SUBJECT_STRING_LENGTH, "0.00 bar");
+                           UI_SUBJECT_STRING_LENGTH, "-- bar");
+    lv_subject_init_int(&intake_temp, 0);
+    static char intake_temp_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char intake_temp_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&intake_temp_str, intake_temp_str_buf, intake_temp_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "--°C");
+    static char g_force_str_buf[UI_SUBJECT_STRING_LENGTH];
+    static char g_force_str_prev_buf[UI_SUBJECT_STRING_LENGTH];
+    lv_subject_init_string(&g_force_str, g_force_str_buf, g_force_str_prev_buf,
+                           UI_SUBJECT_STRING_LENGTH, "0.00 G");
     lv_subject_init_int(&can_error, 0);
     lv_subject_set_min_value_int(&can_error, 0);
     lv_subject_set_max_value_int(&can_error, 1);
@@ -252,11 +296,20 @@ void hud_ui_init_gen(const char * asset_path)
 
     /* Register subjects */
     lv_xml_register_subject(NULL, "engine_rpm", &engine_rpm);
+    lv_xml_register_subject(NULL, "engine_rpm_str", &engine_rpm_str);
     lv_xml_register_subject(NULL, "coolant_temp", &coolant_temp);
+    lv_xml_register_subject(NULL, "coolant_temp_str", &coolant_temp_str);
     lv_xml_register_subject(NULL, "speed", &speed);
-    lv_xml_register_subject(NULL, "fuel_capacity", &fuel_capacity);
+    lv_xml_register_subject(NULL, "speed_str", &speed_str);
+    lv_xml_register_subject(NULL, "fuel_consumption", &fuel_consumption);
+    lv_xml_register_subject(NULL, "fuel_consumption_str", &fuel_consumption_str);
+    lv_xml_register_subject(NULL, "fuel_consumption_val_str", &fuel_consumption_val_str);
+    lv_xml_register_subject(NULL, "fuel_consumption_unit_str", &fuel_consumption_unit_str);
     lv_xml_register_subject(NULL, "turbo_boost", &turbo_boost);
     lv_xml_register_subject(NULL, "turbo_boost_str", &turbo_boost_str);
+    lv_xml_register_subject(NULL, "intake_temp", &intake_temp);
+    lv_xml_register_subject(NULL, "intake_temp_str", &intake_temp_str);
+    lv_xml_register_subject(NULL, "g_force_str", &g_force_str);
     lv_xml_register_subject(NULL, "can_error", &can_error);
     lv_xml_register_subject(NULL, "con_error", &con_error);
     lv_xml_register_subject(NULL, "settings_brightness", &settings_brightness);
@@ -273,7 +326,6 @@ void hud_ui_init_gen(const char * asset_path)
      * While running in the editor skip this step to update the preview when the XML changes */
 #if defined(LV_USE_XML) && LV_USE_XML && !defined(LV_EDITOR_PREVIEW)
     /* Register images */
-    lv_xml_register_image(NULL, "subaru_logo", subaru_logo);
     lv_xml_register_image(NULL, "rotation", rotation);
     lv_xml_register_image(NULL, "brightness", brightness);
     lv_xml_register_image(NULL, "hud", hud);
@@ -281,6 +333,7 @@ void hud_ui_init_gen(const char * asset_path)
     lv_xml_register_image(NULL, "disconnect", disconnect);
     lv_xml_register_image(NULL, "back", back);
     lv_xml_register_image(NULL, "restart", restart);
+    lv_xml_register_image(NULL, "turbo", turbo);
 #endif
 
 #if !defined(LV_USE_XML) || LV_USE_XML == 0

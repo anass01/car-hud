@@ -99,7 +99,6 @@ extern lv_font_t * roboto_bold_150;
  *----------------*/
 
 /* Targets: any */
-extern const void * subaru_logo;
 extern const void * rotation;
 extern const void * brightness;
 extern const void * hud;
@@ -107,17 +106,27 @@ extern const void * warning;
 extern const void * disconnect;
 extern const void * back;
 extern const void * restart;
+extern const void * turbo;
 
 /*----------------
  * Subjects
  *----------------*/
 
 extern lv_subject_t engine_rpm;
+extern lv_subject_t engine_rpm_str;
 extern lv_subject_t coolant_temp;
+extern lv_subject_t coolant_temp_str;
 extern lv_subject_t speed;
-extern lv_subject_t fuel_capacity;
+extern lv_subject_t speed_str;
+extern lv_subject_t fuel_consumption;
+extern lv_subject_t fuel_consumption_str;
+extern lv_subject_t fuel_consumption_val_str;
+extern lv_subject_t fuel_consumption_unit_str;
 extern lv_subject_t turbo_boost;
 extern lv_subject_t turbo_boost_str;
+extern lv_subject_t intake_temp;
+extern lv_subject_t intake_temp_str;
+extern lv_subject_t g_force_str;
 extern lv_subject_t can_error;
 extern lv_subject_t con_error;
 extern lv_subject_t settings_brightness;
@@ -153,7 +162,6 @@ void hud_ui_init_gen(const char * asset_path);
 
 /*Include all the widgets, components and screens of this library*/
 #include "components/settings_item/settings_item_gen.h"
-#include "screens/boot_gen.h"
 #include "screens/dashboard_gen.h"
 #include "screens/settings_gen.h"
 

@@ -239,7 +239,7 @@
 
 #define BUZZER_PIN -1
 
-#define LV_BUFFER_SIZE (SCREEN_WIDTH * 30)
+#define LV_BUFFER_SIZE (SCREEN_WIDTH * 70 * 2)
 
 #else
 

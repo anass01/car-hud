@@ -20,5 +20,7 @@
   "image:back": "70606cd04fd09010-eb0a9a5b2a6246ed",
   "image:back:output": "0021f0b6c97ca803",
   "image:restart": "ced592179716a917-9250991852aa3a5b",
-  "image:restart:output": "61e9bc51511f08be"
+  "image:restart:output": "61e9bc51511f08be",
+  "image:turbo": "e30055217f149e67-9b9f3255724a6cda",
+  "image:turbo:output": "46b8c9438c3b2776"
 }
