@@ -52,7 +52,7 @@ lv_obj_t * dashboard_create(void)
         lv_style_set_arc_width(&style_arc, 3);
         lv_style_set_arc_rounded(&style_arc, false);
         lv_style_set_arc_color(&style_arc, lv_color_hex(0xffffff));
-        lv_style_set_arc_width(&style_arc_indicator, 30);
+        lv_style_set_arc_width(&style_arc_indicator, 7);
         lv_style_set_arc_rounded(&style_arc_indicator, false);
         lv_style_set_arc_color(&style_arc_indicator, lv_color_hex(0xffffff));
         lv_style_set_bg_opa(&style_knob, 0);
