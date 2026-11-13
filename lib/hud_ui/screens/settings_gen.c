@@ -124,6 +124,13 @@ lv_obj_t * settings_create(void)
         lv_obj_set_flex_grow(lv_label_3, 1);
         lv_label_set_text(lv_label_3, "Restart Now");
 
+        lv_obj_t * settings_dtc = settings_item_create(lv_obj_1, warning);
+        lv_obj_set_name(settings_dtc, "settings_dtc");
+        lv_obj_add_style(settings_dtc, &style_pressed, LV_STATE_PRESSED);
+        lv_obj_t * lv_label_4 = lv_label_create(settings_dtc);
+        lv_obj_set_flex_grow(lv_label_4, 1);
+        lv_label_set_text(lv_label_4, "Diagnostic / DTC Codes");
+
         the_root = lv_obj_0;
     }
     #endif

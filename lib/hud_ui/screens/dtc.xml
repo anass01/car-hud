@@ -1,0 +1,192 @@
+<screen>
+	<styles>
+		<style
+			name="style_btn_back"
+			width="74"
+			height="34"
+			radius="17"
+			bg_color="0x272c38"
+			border_width="1"
+			border_color="0x404859"
+		/>
+		<style
+			name="style_engine_badge"
+			width="310"
+			height="26"
+			radius="13"
+			pad_all="0"
+			bg_color="0x102b1c"
+			border_width="1"
+			border_color="0x27ae60"
+		/>
+		<style
+			name="style_list_cont"
+			width="340"
+			height="195"
+			radius="12"
+			bg_color="0x13171e"
+			border_width="1"
+			border_color="0x272d3b"
+			pad_all="8"
+			layout="flex"
+			flex_flow="column"
+		/>
+		<style
+			name="style_dtc_card"
+			width="322"
+			height="62"
+			radius="8"
+			bg_color="0x1c212c"
+			border_width="1"
+			border_color="0x384155"
+			pad_all="6"
+		/>
+		<style
+			name="style_btn_row"
+			width="340"
+			height="48"
+			bg_opa="0"
+			border_width="0"
+			pad_all="0"
+			layout="flex"
+			flex_flow="row"
+			pad_column="14"
+		/>
+		<style
+			name="style_btn_read"
+			width="100"
+			height="40"
+			radius="20"
+			bg_color="0x24426b"
+			border_width="1"
+			border_color="0x35629e"
+		/>
+		<style
+			name="style_btn_clear"
+			width="100"
+			height="40"
+			radius="20"
+			bg_color="0x8a2318"
+			border_width="1"
+			border_color="0xb8382a"
+		/>
+		<style
+			name="style_pressed"
+			bg_color="0xffffff"
+			bg_opa="100"
+			radius="0"
+		/>
+	</styles>
+	<view>
+		<style name="style_dark" />
+
+		<!-- 1. Back button (Top Left) -->
+		<lv_button name="dtc_back" x="165" y="5">
+			<style name="style_btn_back" />
+			<lv_label text="Back" align="center" />
+		</lv_button>
+
+		<!-- 3. Engine Status Badge (Below Title) -->
+		<lv_obj
+			name="dtc_engine_badge"
+			align="top_mid"
+			y="58"
+			scrollbar_mode="off"
+		>
+			<style name="style_engine_badge" />
+			<lv_label
+				name="dtc_engine_label"
+				text="Engine OFF (Clear Allowed)"
+				align="center"
+				style_text_color="0x2ecc71"
+			/>
+		</lv_obj>
+
+		<!-- 4. Scrollable DTC List Container -->
+		<lv_obj
+			name="dtc_list_cont"
+			align="top_mid"
+			y="88"
+			scrollbar_mode="auto"
+		>
+			<style name="style_list_cont" />
+			<lv_obj name="dtc_card_sample1" scrollbar_mode="off">
+				<style name="style_dtc_card" />
+				<lv_label
+					name="dtc_code_sample1"
+					text="P0101"
+					x="4"
+					y="0"
+					style_text_font="roboto_regular_24"
+					style_text_color="0xf39c12"
+				/>
+				<lv_label
+					name="dtc_desc_sample1"
+					text="MAF Sensor Range / Performance"
+					x="4"
+					y="30"
+					style_text_color="0xdfe4ea"
+				/>
+			</lv_obj>
+			<lv_obj name="dtc_card_sample2" scrollbar_mode="off">
+				<style name="style_dtc_card" />
+				<lv_label
+					name="dtc_code_sample2"
+					text="P0234"
+					x="4"
+					y="0"
+					style_text_font="roboto_regular_24"
+					style_text_color="0xf39c12"
+				/>
+				<lv_label
+					name="dtc_desc_sample2"
+					text="Turbocharger Engine Overboost"
+					x="4"
+					y="30"
+					style_text_color="0xdfe4ea"
+				/>
+			</lv_obj>
+		</lv_obj>
+
+		<!-- 5. Status Notice Label -->
+		<lv_label
+			name="dtc_status"
+			text="Tap 'Read' to query OBD"
+			align="top_mid"
+			y="287"
+			width="360"
+			style_text_align="center"
+			style_text_color="0x8f9bb3"
+		/>
+
+		<!-- 6. Action Buttons Row -->
+		<lv_obj
+			name="dtc_btn_row"
+			align="top_mid"
+			y="330"
+			x="2"
+			scrollbar_mode="off"
+			width="216"
+			height="50"
+		>
+			<style name="style_btn_row" />
+			<lv_button name="dtc_btn_read">
+				<style name="style_btn_read" />
+				<lv_label
+					text="Read"
+					align="center"
+					style_text_color="0xffffff"
+				/>
+			</lv_button>
+			<lv_button name="dtc_btn_clear">
+				<style name="style_btn_clear" />
+				<lv_label
+					name="dtc_clear_label"
+					text="Clear"
+					align="center"
+					style_text_color="0xffffff"
+				/>
+			</lv_button>
+		</lv_obj>
+	</view>
+</screen>

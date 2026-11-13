@@ -16,4 +16,5 @@ list(
   ${CMAKE_CURRENT_LIST_DIR}/images/turbo_data.c
   ${CMAKE_CURRENT_LIST_DIR}/images/warning_data.c
   ${CMAKE_CURRENT_LIST_DIR}/screens/dashboard_gen.c
+  ${CMAKE_CURRENT_LIST_DIR}/screens/dtc_gen.c
   ${CMAKE_CURRENT_LIST_DIR}/screens/settings_gen.c)

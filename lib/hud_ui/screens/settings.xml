@@ -56,6 +56,10 @@
 				<style name="style_pressed" selector="pressed" />
 				<lv_label flex_grow="1" text="Restart Now" />
 			</settings_item>
+			<settings_item name="settings_dtc" icon="warning">
+				<style name="style_pressed" selector="pressed" />
+				<lv_label flex_grow="1" text="Diagnostic / DTC Codes" />
+			</settings_item>
 		</lv_obj>
 	</view>
 </screen>

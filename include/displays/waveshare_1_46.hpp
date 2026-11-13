@@ -45,7 +45,7 @@ public:
         Wire.write(0x01); // Output Port Register
         Wire.write(0x00); // LOW
         Wire.endTransmission();
-        delay(20);
+        delay(50);
 
         // Release Reset: Pull EXIO0 & EXIO1 HIGH
         Wire.beginTransmission(TCA9554_ADDR);
@@ -62,27 +62,24 @@ public:
         // 4. Setup Touch Interrupt Pin
         pinMode(TP_INT, INPUT_PULLUP);
 
-        // Initialize SPD2010 Touch controller
-        static const uint8_t cpu_start[2]  = { 0x01, 0x00 };
-        static const uint8_t point_mode[2] = { 0x00, 0x00 };
-        static const uint8_t start[2]      = { 0x00, 0x00 };
-
-        clearInt();
-        delay(5);
-        writeCommand(0x0004, cpu_start, 2);
-        delay(5);
-        writeCommand(0x0050, point_mode, 2);
-        delay(5);
-        writeCommand(0x0046, start, 2);
-        delay(5);
-        clearInt();
-
-        // Drain any pending boot interrupt
-        for (int i = 0; i < 5 && digitalRead(TP_INT) == LOW; i++)
+        // Check if SPD2010 responds on I2C bus
+        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
+        if (Wire.endTransmission() != 0)
         {
-            uint8_t dummy[4];
-            readRegister(0x0020, dummy, 4);
-            clearInt();
+            Serial.println("[TOUCH] SPD2010 not detected at 0x53");
+        }
+        else
+        {
+            Serial.println("[TOUCH] SPD2010 detected at 0x53");
+        }
+
+        read_fw_version();
+
+        // Step through SPD2010 BIOS -> CPU -> RUN initialization
+        for (int i = 0; i < 20; i++)
+        {
+            SPD2010_Touch dummy = {0};
+            tp_read_data(&dummy);
             delay(10);
         }
 
@@ -157,76 +154,80 @@ public:
         gfx->writePixel(x, y, color);
     }
 
+    struct tp_report_t {
+        uint8_t id;
+        uint16_t x;
+        uint16_t y;
+        uint8_t weight;
+    };
+
+    struct SPD2010_Touch {
+        tp_report_t rpt[5];
+        uint8_t touch_num;
+        uint8_t pack_code;
+        uint8_t down;
+        uint8_t up;
+        uint8_t gesture;
+        uint16_t down_x;
+        uint16_t down_y;
+        uint16_t up_x;
+        uint16_t up_y;
+    };
+
+    struct tp_status_high_t {
+        uint8_t none0;
+        uint8_t none1;
+        uint8_t none2;
+        uint8_t cpu_run;
+        uint8_t tint_low;
+        uint8_t tic_in_cpu;
+        uint8_t tic_in_bios;
+        uint8_t tic_busy;
+    };
+
+    struct tp_status_low_t {
+        uint8_t pt_exist;
+        uint8_t gesture;
+        uint8_t key;
+        uint8_t aux;
+        uint8_t keep;
+        uint8_t raw_or_pt;
+        uint8_t none6;
+        uint8_t none7;
+    };
+
+    struct tp_status_t {
+        tp_status_low_t status_low;
+        tp_status_high_t status_high;
+        uint16_t read_len;
+    };
+
+    struct tp_hdp_status_t {
+        uint8_t status;
+        uint16_t next_packet_len;
+    };
+
     bool getTouch(uint16_t *x, uint16_t *y)
     {
-        // INT is active LOW when touched
-        if (digitalRead(TP_INT) != LOW)
+        SPD2010_Touch touch = {0};
+        if (!tp_read_data(&touch))
         {
             return false;
         }
 
-        uint8_t status[4] = {0};
-        if (!readRegister(0x0020, status, 4))
-        {
-            clearInt();
-            return false;
-        }
-
-        // If I2C bus returned idle pullup values (0xFF), no valid device response
-        if (status[0] == 0xFF && status[1] == 0xFF && status[2] == 0xFF && status[3] == 0xFF)
+        if (touch.touch_num == 0)
         {
             return false;
         }
 
-        // Check if chip is in BIOS or CPU transition state
-        static const uint8_t cpu_start[2]  = { 0x01, 0x00 };
-        static const uint8_t point_mode[2] = { 0x00, 0x00 };
-        static const uint8_t start[2]      = { 0x00, 0x00 };
-
-        bool tic_in_bios = (status[0] & 0x02) != 0;
-        bool tic_in_cpu  = (status[0] & 0x04) != 0;
-
-        if (tic_in_bios)
-        {
-            clearInt();
-            writeCommand(0x0004, cpu_start, 2);
-            return false;
-        }
-        if (tic_in_cpu)
-        {
-            writeCommand(0x0050, point_mode, 2);
-            writeCommand(0x0046, start, 2);
-            clearInt();
-            return false;
-        }
-
-        bool pt_exist = (status[0] & 0x01) != 0;
-        uint16_t read_len = (uint16_t)status[2] | ((uint16_t)status[3] << 8);
-
-        if (!pt_exist || read_len < 10)
-        {
-            clearInt();
-            return false;
-        }
-
-        uint8_t buf[16] = {0};
-        uint8_t to_read = (read_len > 16) ? 16 : (uint8_t)read_len;
-        if (!readRegister(0x0300, buf, to_read))
-        {
-            clearInt();
-            return false;
-        }
-
-        clearInt(); // Acknowledge and release INT
-
-        uint8_t weight = buf[8];
+        uint8_t weight = touch.rpt[0].weight;
         if (weight == 0 || weight == 0xFF)
         {
             return false;
         }
 
-        uint16_t raw_x = (((uint16_t)(buf[7] & 0xF0)) << 4) | (uint16_t)buf[5];
-        uint16_t raw_y = (((uint16_t)(buf[7] & 0x0F)) << 8) | (uint16_t)buf[6];
+        uint16_t raw_x = touch.rpt[0].x;
+        uint16_t raw_y = touch.rpt[0].y;
 
         if (raw_x >= SCREEN_WIDTH || raw_y >= SCREEN_HEIGHT)
         {
@@ -251,49 +252,213 @@ private:
     bool flip_x = false;
     bool flip_y = false;
 
-    bool writeCommand(uint16_t reg, const uint8_t *data, size_t len)
+    static bool I2C_Read_Touch(uint8_t Driver_addr, uint16_t Reg_addr, uint8_t *Reg_data, uint32_t Length)
     {
-        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
-        Wire.write((uint8_t)(reg & 0xFF));
-        Wire.write((uint8_t)(reg >> 8));
-        for (size_t i = 0; i < len; i++)
-        {
-            Wire.write(data[i]);
-        }
-        return (Wire.endTransmission() == 0);
-    }
-
-    bool readRegister(uint16_t reg, uint8_t *data, size_t len)
-    {
-        Wire.beginTransmission(SPD2010_TOUCH_ADDR);
-        Wire.write((uint8_t)(reg & 0xFF));
-        Wire.write((uint8_t)(reg >> 8));
-        if (Wire.endTransmission() != 0)
+        Wire.beginTransmission(Driver_addr);
+        Wire.write((uint8_t)(Reg_addr >> 8));
+        Wire.write((uint8_t)Reg_addr);
+        if (Wire.endTransmission(true) != 0)
         {
             return false;
         }
-
-        uint8_t read_bytes = Wire.requestFrom((uint8_t)SPD2010_TOUCH_ADDR, (size_t)len);
-        if (read_bytes < len)
+        uint8_t read_bytes = Wire.requestFrom((uint8_t)Driver_addr, (size_t)Length);
+        if (read_bytes < Length)
         {
             while (Wire.available()) Wire.read();
             return false;
         }
-
-        for (size_t i = 0; i < len; i++)
+        for (uint32_t i = 0; i < Length; i++)
         {
-            data[i] = Wire.read();
+            Reg_data[i] = Wire.read();
         }
         return true;
     }
 
-    void clearInt()
+    static bool I2C_Write_Touch(uint8_t Driver_addr, uint16_t Reg_addr, const uint8_t *Reg_data, uint32_t Length)
     {
-        static const uint8_t ack[2]  = { 0x01, 0x00 };
-        static const uint8_t rear[2] = { 0x00, 0x00 };
-        writeCommand(0x0002, ack, 2);
+        Wire.beginTransmission(Driver_addr);
+        Wire.write((uint8_t)(Reg_addr >> 8));
+        Wire.write((uint8_t)Reg_addr);
+        for (uint32_t i = 0; i < Length; i++)
+        {
+            Wire.write(Reg_data[i]);
+        }
+        return (Wire.endTransmission(true) == 0);
+    }
+
+    static void write_tp_point_mode_cmd()
+    {
+        static const uint8_t data[2] = { 0x00, 0x00 };
+        I2C_Write_Touch(SPD2010_TOUCH_ADDR, 0x5000, data, 2);
         delayMicroseconds(200);
-        writeCommand(0x0002, rear, 2);
+    }
+
+    static void write_tp_start_cmd()
+    {
+        static const uint8_t data[2] = { 0x00, 0x00 };
+        I2C_Write_Touch(SPD2010_TOUCH_ADDR, 0x4600, data, 2);
+        delayMicroseconds(200);
+    }
+
+    static void write_tp_cpu_start_cmd()
+    {
+        static const uint8_t data[2] = { 0x01, 0x00 };
+        I2C_Write_Touch(SPD2010_TOUCH_ADDR, 0x0400, data, 2);
+        delayMicroseconds(200);
+    }
+
+    static void write_tp_clear_int_cmd()
+    {
+        static const uint8_t data[2] = { 0x01, 0x00 };
+        I2C_Write_Touch(SPD2010_TOUCH_ADDR, 0x0200, data, 2);
+        delayMicroseconds(200);
+    }
+
+    static bool read_tp_status_length(tp_status_t *tp_status)
+    {
+        uint8_t sample_data[4] = {0};
+        if (!I2C_Read_Touch(SPD2010_TOUCH_ADDR, 0x2000, sample_data, 4))
+        {
+            return false;
+        }
+        delayMicroseconds(200);
+        tp_status->status_low.pt_exist = (sample_data[0] & 0x01);
+        tp_status->status_low.gesture = (sample_data[0] & 0x02);
+        tp_status->status_low.aux = (sample_data[0] & 0x08);
+        tp_status->status_high.tic_busy = ((sample_data[1] & 0x80) >> 7);
+        tp_status->status_high.tic_in_bios = ((sample_data[1] & 0x40) >> 6);
+        tp_status->status_high.tic_in_cpu = ((sample_data[1] & 0x20) >> 5);
+        tp_status->status_high.tint_low = ((sample_data[1] & 0x10) >> 4);
+        tp_status->status_high.cpu_run = ((sample_data[1] & 0x08) >> 3);
+        tp_status->read_len = ((uint16_t)sample_data[3] << 8) | sample_data[2];
+        return true;
+    }
+
+    static bool read_tp_hdp_status(tp_hdp_status_t *tp_hdp_status)
+    {
+        uint8_t sample_data[8] = {0};
+        if (!I2C_Read_Touch(SPD2010_TOUCH_ADDR, 0xFC02, sample_data, 8))
+        {
+            return false;
+        }
+        tp_hdp_status->status = sample_data[5];
+        tp_hdp_status->next_packet_len = ((uint16_t)sample_data[2]) | (((uint16_t)sample_data[3]) << 8);
+        return true;
+    }
+
+    static bool Read_HDP_REMAIN_DATA(tp_hdp_status_t *tp_hdp_status)
+    {
+        uint8_t sample_data[64] = {0};
+        uint16_t len = tp_hdp_status->next_packet_len;
+        if (len > sizeof(sample_data)) len = sizeof(sample_data);
+        return I2C_Read_Touch(SPD2010_TOUCH_ADDR, 0x0003, sample_data, len);
+    }
+
+    static bool read_tp_hdp(tp_status_t *tp_status, SPD2010_Touch *touch)
+    {
+        uint8_t sample_data[64] = {0};
+        uint16_t len = tp_status->read_len;
+        if (len > sizeof(sample_data)) len = sizeof(sample_data);
+        if (!I2C_Read_Touch(SPD2010_TOUCH_ADDR, 0x0003, sample_data, len))
+        {
+            return false;
+        }
+
+        uint8_t check_id = sample_data[4];
+        if ((check_id <= 0x0A) && tp_status->status_low.pt_exist)
+        {
+            touch->touch_num = ((tp_status->read_len - 4) / 6);
+            if (touch->touch_num > 5) touch->touch_num = 5;
+            touch->gesture = 0x00;
+            for (uint8_t i = 0; i < touch->touch_num; i++)
+            {
+                uint8_t offset = i * 6;
+                touch->rpt[i].id = sample_data[4 + offset];
+                touch->rpt[i].x = (((uint16_t)(sample_data[7 + offset] & 0xF0)) << 4) | sample_data[5 + offset];
+                touch->rpt[i].y = (((uint16_t)(sample_data[7 + offset] & 0x0F)) << 8) | sample_data[6 + offset];
+                touch->rpt[i].weight = sample_data[8 + offset];
+            }
+        }
+        else if ((check_id == 0xF6) && tp_status->status_low.gesture)
+        {
+            touch->touch_num = 0x00;
+            touch->gesture = sample_data[6] & 0x07;
+        }
+        else
+        {
+            touch->touch_num = 0x00;
+            touch->gesture = 0x00;
+        }
+        return true;
+    }
+
+    static bool tp_read_data(SPD2010_Touch *touch)
+    {
+        tp_status_t tp_status = {0};
+        tp_hdp_status_t tp_hdp_status = {0};
+        if (!read_tp_status_length(&tp_status))
+        {
+            return false;
+        }
+
+        if (tp_status.status_high.tic_in_bios)
+        {
+            write_tp_clear_int_cmd();
+            write_tp_cpu_start_cmd();
+        }
+        else if (tp_status.status_high.tic_in_cpu)
+        {
+            write_tp_point_mode_cmd();
+            write_tp_start_cmd();
+            write_tp_clear_int_cmd();
+        }
+        else if (tp_status.status_high.cpu_run && tp_status.read_len == 0)
+        {
+            write_tp_clear_int_cmd();
+        }
+        else if (tp_status.status_low.pt_exist || tp_status.status_low.gesture)
+        {
+            read_tp_hdp(&tp_status, touch);
+            int retry = 5;
+            while (retry-- > 0)
+            {
+                if (!read_tp_hdp_status(&tp_hdp_status)) break;
+                if (tp_hdp_status.status == 0x82)
+                {
+                    write_tp_clear_int_cmd();
+                    break;
+                }
+                else if (tp_hdp_status.status == 0x00)
+                {
+                    Read_HDP_REMAIN_DATA(&tp_hdp_status);
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+        else if (tp_status.status_high.cpu_run && tp_status.status_low.aux)
+        {
+            write_tp_clear_int_cmd();
+        }
+
+        return true;
+    }
+
+    static void read_fw_version()
+    {
+        uint8_t sample_data[18] = {0};
+        if (I2C_Read_Touch(SPD2010_TOUCH_ADDR, 0x2600, sample_data, 18))
+        {
+            uint16_t DVer = ((uint16_t)sample_data[5] << 8) | sample_data[4];
+            uint32_t PID = (((uint32_t)sample_data[9]) << 24) | (((uint32_t)sample_data[8]) << 16) | (((uint32_t)sample_data[7]) << 8) | sample_data[6];
+            Serial.printf("[TOUCH] SPD2010 FW read OK: DVer=%d, PID=%lu\r\n", DVer, PID);
+        }
+        else
+        {
+            Serial.println("[TOUCH] SPD2010 FW read failed");
+        }
     }
 };
 

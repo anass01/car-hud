@@ -34,6 +34,7 @@
 #include "main.h"
 #include <Preferences.h>
 #include "hud_ui.h"
+#include "dtc_screen.hpp"
 #include <NimBLEDevice.h>
 #include <Timber.h>
 #include "qmi8658.hpp"
@@ -69,6 +70,8 @@ const uint8_t CMD_FUEL_RATE[] = {0x30, 0x31, 0x35, 0x45, 0x31, 0x0D}; // Engine 
 const uint8_t CMD_MAF[] = {0x30, 0x31, 0x31, 0x30, 0x31, 0x0D};       // Mass Air Flow Sensor (01101)
 const uint8_t CMD_TEMP[] = {0x30, 0x31, 0x30, 0x35, 0x31, 0x0D};      // Coolant Temperature (01051)
 const uint8_t CMD_IAT[] = {0x30, 0x31, 0x30, 0x46, 0x31, 0x0D};       // Intake Air Temperature (010F1)
+const uint8_t CMD_DTC_READ[] = {0x30, 0x33, 0x0D};                     // Mode 03: Request DTCs (03\r)
+const uint8_t CMD_DTC_CLEAR[] = {0x30, 0x34, 0x0D};                    // Mode 04: Clear DTCs (04\r)
 
 static QMI8658 imu;
 
@@ -79,7 +82,18 @@ HWCDC USBSerial;
 uint8_t lv_buffer[2][LV_BUFFER_SIZE];
 lv_obj_t *dashboard_screen;
 lv_obj_t *settings_screen;
+lv_obj_t *dtc_screen;
 SemaphoreHandle_t lvgl_mutex;
+
+volatile uint8_t dtc_request_flag = 0; // 0 = idle, 1 = read, 2 = clear
+static bool dtc_query_active = false;
+static bool dtc_clear_in_progress = false;
+static uint32_t dtc_query_start_time = 0;
+static uint32_t dtc_last_read_time = 0;    // Cooldown: last time a Mode 03 was sent
+static uint32_t dtc_post_clear_read_at = 0; // Scheduled time for post-clear verify read (0 = none)
+static constexpr uint32_t DTC_READ_COOLDOWN_MS   = 5000;  // Min 5 s between successive reads
+static constexpr uint32_t DTC_POST_CLEAR_DELAY_MS = 1500; // Wait 1.5 s before re-reading after clear
+static constexpr uint32_t DTC_QUERY_TIMEOUT_MS   = 5000;  // 5 s hard timeout for any DTC command
 
 bool should_restart = false;
 
@@ -145,11 +159,13 @@ static float current_fuel_lph = -1.0f;
 static float latest_engine_load = 15.0f; // Typical idle load for Hyundai 1.5 CRDi
 static bool sweep_active = true;
 
-// Moving average buffer for consumption (average of last 3 readings to debounce and make readable)
-static float consumption_history[3] = {0.0f, 0.0f, 0.0f};
+// Moving average buffer for consumption (debounced average of last 8 readings)
+#define CONSUMPTION_WINDOW_SIZE 8
+static float consumption_history[CONSUMPTION_WINDOW_SIZE] = {0.0f};
 static uint8_t consumption_history_count = 0;
 static uint8_t consumption_history_idx = 0;
 static bool last_was_moving = false;
+static uint32_t last_consumption_ui_time = 0;
 
 static inline void resetConsumptionDebounce()
 {
@@ -166,6 +182,12 @@ void setDisconnectedDefaults()
   latest_engine_load = 0.0f;
   current_fuel_lph = -1.0f;
   resetConsumptionDebounce();
+
+  // Cancel any in-flight DTC operation so we don't send commands on a dead BLE link
+  dtc_request_flag       = 0;
+  dtc_query_active       = false;
+  dtc_clear_in_progress  = false;
+  dtc_post_clear_read_at = 0;
 
   LVGL_EXEC({
     lv_subject_set_int(&speed, 0);
@@ -188,6 +210,7 @@ void setDisconnectedDefaults()
     lv_subject_copy_string(&fuel_consumption_str, "-- L/100km");
 
     lv_subject_set_int(&con_error, 1);
+    dtc_set_engine_state(true);
   });
 }
 
@@ -245,10 +268,10 @@ void updateFuelConsumption()
       instant_val = 0.0f;
   }
 
-  // Rolling average of the last 3 readings to debounce and stabilize the display
+  // Rolling average of the last 8 readings to debounce and stabilize the display
   consumption_history[consumption_history_idx] = instant_val;
-  consumption_history_idx = (consumption_history_idx + 1) % 3;
-  if (consumption_history_count < 3)
+  consumption_history_idx = (consumption_history_idx + 1) % CONSUMPTION_WINDOW_SIZE;
+  if (consumption_history_count < CONSUMPTION_WINDOW_SIZE)
     consumption_history_count++;
 
   float sum = 0.0f;
@@ -258,14 +281,25 @@ void updateFuelConsumption()
   }
   float avg_val = sum / (float)consumption_history_count;
 
-  char buf[32];
-  char val_buf[16];
-  char unit_buf[16];
   int arc_val = (int)(avg_val + 0.5f);
   if (arc_val > 35)
     arc_val = 35;
   if (arc_val < 0)
     arc_val = 0;
+
+  // Rate-limit UI text updates to max 4 times per second (every 250ms) so digits are easily readable
+  uint32_t now = millis();
+  if (now - last_consumption_ui_time < 250)
+  {
+    // Update the gauge arc immediately for fluid motion
+    LVGL_EXEC(lv_subject_set_int(&fuel_consumption, arc_val));
+    return;
+  }
+  last_consumption_ui_time = now;
+
+  char buf[32];
+  char val_buf[16];
+  char unit_buf[16];
 
   if (is_moving)
   {
@@ -288,14 +322,156 @@ void updateFuelConsumption()
   });
 }
 
+/* ---------- DTC RESPONSE PARSER ---------- */
+bool handleDtcResponse(const char *data, size_t len)
+{
+  if (!data || len < 2)
+    return false;
+
+  // 1. Mode 04 Clear response: response begins with "44" (exact service-ID match) or adapter "OK"
+  //    Avoid matching "44" anywhere in the frame (e.g. a stale Mode-01 41 04 response).
+  if (dtc_clear_in_progress)
+  {
+    bool confirmed = false;
+    // Check if first two non-space chars are '4','4'
+    const char *p = data;
+    while (*p == ' ') p++;
+    if (p[0] == '4' && p[1] == '4' && (p[2] == '\0' || p[2] == ' '))
+      confirmed = true;
+    // Also accept plain "OK" (some ELM clones reply with OK instead of 44)
+    if (!confirmed && strncmp(data, "OK", 2) == 0)
+      confirmed = true;
+
+    if (confirmed)
+    {
+      dtc_clear_in_progress = false;
+      dtc_query_active = false;
+      dtc_last_read_time = millis(); // reset cooldown after clear
+      LVGL_EXEC(dtc_clear_all_codes());
+      // Schedule a verify-read 1.5 s from now (in loop(), not here — no delay() in notify context)
+      dtc_post_clear_read_at = millis() + DTC_POST_CLEAR_DELAY_MS;
+      Serial.println("[DTC] Clear ACK received. Verify-read scheduled in 1.5 s.");
+      return true;
+    }
+  }
+
+  // 2. ELM adapter error strings → abort query, do not retry automatically
+  if (strstr(data, "ERROR")    != NULL ||
+      strstr(data, "UNABLE")   != NULL ||
+      strstr(data, "STOPPED")  != NULL ||
+      strstr(data, "BUS BUSY") != NULL ||
+      strstr(data, "CAN ERROR")!= NULL)
+  {
+    dtc_query_active      = false;
+    dtc_clear_in_progress = false;
+    Serial.printf("[DTC] Adapter error during DTC query: %s\n", data);
+    LVGL_EXEC(dtc_set_status_text("Adapter error. Reconnect and try again."));
+    return true;
+  }
+
+  // 3. "NO CODES", "NO DATA", or "0 CODES" → clean zero-DTC result
+  if (strstr(data, "NO CODES") != NULL ||
+      strstr(data, "NO DATA")  != NULL ||
+      strstr(data, "0 CODES")  != NULL)
+  {
+    dtc_query_active = false;
+    LVGL_EXEC({
+      s_dtc_count = 0;
+      dtc_finalize_scan();
+    });
+    return true;
+  }
+
+  // 4. Mode 03 response: line must start with "43" (service-ID)
+  const char *p = data;
+  while (*p == ' ') p++;
+  if (p[0] == '4' && p[1] == '3')
+  {
+    const char *cur = p + 2;
+    dtc_query_active = false;
+
+    uint8_t bytes[16];
+    uint8_t count = 0;
+    while (*cur != '\0' && count < 16)
+    {
+      while (*cur == ' ') cur++;
+      if (*cur == '\0' || *(cur + 1) == '\0') break;
+      if (isxdigit((unsigned char)*cur) && isxdigit((unsigned char)*(cur + 1)))
+      {
+        bytes[count++] = hexToByte(*cur, *(cur + 1));
+        cur += 2;
+      }
+      else
+      {
+        cur++;
+      }
+    }
+
+    bool all_zeros = true;
+    for (uint8_t i = 0; i < count; i++)
+    {
+      if (bytes[i] != 0) { all_zeros = false; break; }
+    }
+
+    LVGL_EXEC({
+      s_dtc_count = 0;
+      if (!all_zeros && count >= 2)
+      {
+        uint8_t start_idx = 0;
+        // Some adapters prefix the frame with the DTC count byte
+        if ((count % 2 != 0) && bytes[0] <= 10)
+        {
+          start_idx = 1;
+        }
+
+        for (uint8_t i = start_idx; i + 1 < count; i += 2)
+        {
+          uint8_t b1 = bytes[i];
+          uint8_t b2 = bytes[i + 1];
+          if (b1 == 0x00 && b2 == 0x00) continue;
+
+          char code[8];
+          char prefix = 'P';
+          switch ((b1 >> 6) & 0x03)
+          {
+          case 0: prefix = 'P'; break;
+          case 1: prefix = 'C'; break;
+          case 2: prefix = 'B'; break;
+          case 3: prefix = 'U'; break;
+          }
+          uint8_t d1 = (b1 >> 4) & 0x03;
+          uint8_t d2 = b1 & 0x0F;
+          uint8_t d3 = (b2 >> 4) & 0x0F;
+          uint8_t d4 = b2 & 0x0F;
+          snprintf(code, sizeof(code), "%c%X%X%X%X", prefix, d1, d2, d3, d4);
+          dtc_add_code(code);
+        }
+      }
+      dtc_finalize_scan();
+    });
+    return true;
+  }
+
+  return false;
+}
+
 /* ---------- SIMPLE PARSER ---------- */
 void parseObd(const uint8_t *data, size_t len)
 {
   if (sweep_active)
     return;
 
-  if (len < 4)
+  if (len < 2)
     return;
+
+  // Check for DTC Responses (Mode 03: "43", "NO CODES", "NO DATA" or Mode 04: "44", "OK")
+  if (dtc_query_active)
+  {
+    if (handleDtcResponse((const char *)data, len))
+    {
+      return;
+    }
+  }
 
   // Check for error response ("ERROR", "CAN ERROR", etc.)
   for (size_t i = 0; i + 4 <= len; i++)
@@ -380,6 +556,7 @@ void parseObd(const uint8_t *data, size_t len)
       lv_subject_set_int(&engine_rpm, (int)rpm);
       lv_subject_copy_string(&engine_rpm_str, buf);
       lv_subject_set_int(&con_error, 0);
+      dtc_set_engine_state(rpm < 300.0f);
     });
     updateDieselFuelRate();
     break;
@@ -671,19 +848,36 @@ void rounder_event_cb(lv_event_t *e)
 /*Read the touchpad*/
 void my_touchpad_read(lv_indev_t *indev_driver, lv_indev_data_t *data)
 {
+  static uint16_t last_x = SCREEN_WIDTH / 2;
+  static uint16_t last_y = SCREEN_HEIGHT / 2;
+  static bool was_pressed = false;
+
   uint16_t touchX, touchY;
   bool touched = tft.getTouch(&touchX, &touchY);
 
   if (!touched)
   {
     data->state = LV_INDEV_STATE_RELEASED;
+    data->point.x = last_x;
+    data->point.y = last_y;
+    if (was_pressed)
+    {
+      was_pressed = false;
+      Serial.printf("[TOUCH] Released at (%d, %d)\r\n", last_x, last_y);
+    }
   }
   else
   {
     data->state = LV_INDEV_STATE_PRESSED;
-    /*Set the coordinates*/
     data->point.x = touchX;
     data->point.y = touchY;
+    last_x = touchX;
+    last_y = touchY;
+    if (!was_pressed)
+    {
+      was_pressed = true;
+      Serial.printf("[TOUCH] Pressed at (%d, %d)\r\n", touchX, touchY);
+    }
   }
 }
 
@@ -781,6 +975,8 @@ void setup()
   static lv_indev_t *lv_input = lv_indev_create();
   lv_indev_set_type(lv_input, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(lv_input, my_touchpad_read);
+  lv_indev_set_display(lv_input, lv_display);
+  lv_indev_set_long_press_time(lv_input, 400);
 
   /* Create a mutex for LVGL */
   /* This mutex is used to protect the LVGL library from concurrent access */
@@ -807,6 +1003,32 @@ void setup()
 
   dashboard_screen = dashboard_create();
   settings_screen = settings_create();
+  dtc_screen = dtc_create(dashboard_screen);
+
+  lv_obj_t *settings_dtc = lv_obj_find_by_name(settings_screen, "settings_dtc");
+  if (settings_dtc)
+  {
+    lv_obj_add_event_cb(settings_dtc, [](lv_event_t *e) {
+      dtc_set_return_screen(settings_screen);
+      if (!s_dtc_scanned) {
+        dtc_request_flag = 1; // Auto-trigger scan on opening DTC screen
+      }
+      lv_screen_load_anim(dtc_screen, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+    }, LV_EVENT_CLICKED, NULL);
+  }
+
+  lv_obj_add_flag(dashboard_screen, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(dashboard_screen, LV_OBJ_FLAG_PRESS_LOCK);
+  lv_obj_clear_flag(dashboard_screen, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Clear clickable flag and add gesture bubble on all direct children of dashboard_screen so touches anywhere reach the screen
+  uint32_t child_count = lv_obj_get_child_count(dashboard_screen);
+  for (uint32_t i = 0; i < child_count; i++)
+  {
+    lv_obj_t *child = lv_obj_get_child(dashboard_screen, i);
+    lv_obj_clear_flag(child, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(child, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  }
 
   lv_obj_t *settings_back = lv_obj_find_by_name(settings_screen, "settings_back");
   if (settings_back)
@@ -820,6 +1042,31 @@ void setup()
   {
     lv_obj_add_event_cb(settings_restart, on_restart_cb, LV_EVENT_CLICKED, NULL);
   }
+
+  // Swipe Left on Dashboard -> Open DTC screen
+  lv_obj_add_event_cb(dashboard_screen, [](lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+      lv_indev_t *indev = lv_indev_active();
+      if (indev) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+        if (dir == LV_DIR_LEFT) {
+          lv_indev_wait_release(indev);
+          Serial.println("[UI] Dashboard swipe left detected -> opening DTC screen");
+          dtc_set_return_screen(dashboard_screen);
+          if (!s_dtc_scanned) {
+            dtc_request_flag = 1; // Auto-trigger scan on opening DTC screen
+          }
+          lv_screen_load_anim(dtc_screen, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+        }
+      }
+    }
+  }, LV_EVENT_GESTURE, NULL);
+
+  lv_obj_add_event_cb(dashboard_screen, [](lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
+      Serial.println("[UI] Dashboard long press detected -> opening settings");
+    }
+  }, LV_EVENT_LONG_PRESSED, NULL);
 
   lv_obj_add_screen_load_event(dashboard_screen, LV_EVENT_LONG_PRESSED, settings_screen,
                                LV_SCREEN_LOAD_ANIM_FADE_IN, 500, 0);
@@ -957,6 +1204,133 @@ void loop()
 
   if (!obdChar)
     return;
+
+  // ── DTC GUARDRAILS ───────────────────────────────────────────────────────
+  // Guard 1: Discard any pending DTC requests that arrived while sweeping or disconnected
+  if (sweep_active && dtc_request_flag != 0)
+  {
+    dtc_request_flag = 0;
+    return;
+  }
+
+  // Guard 2: Scheduled post-clear verify-read (non-blocking, fires after DTC_POST_CLEAR_DELAY_MS)
+  if (dtc_post_clear_read_at != 0 && now >= dtc_post_clear_read_at)
+  {
+    dtc_post_clear_read_at = 0;
+    if (!dtc_query_active && obdChar) // only if not already busy
+    {
+      Serial.println("[DTC] Post-clear verify read.");
+      dtc_query_active      = true;
+      dtc_clear_in_progress = false;
+      dtc_query_start_time  = now;
+      dtc_last_read_time    = now;
+      obdWrite(CMD_DTC_READ, sizeof(CMD_DTC_READ));
+    }
+    return;
+  }
+
+  // Guard 3: User navigated away from DTC screen mid-query → cancel silently
+  if (dtc_query_active && lv_screen_active() != dtc_screen)
+  {
+    Serial.println("[DTC] Screen left during query – cancelling.");
+    dtc_query_active      = false;
+    dtc_clear_in_progress = false;
+    dtc_post_clear_read_at = 0;
+    // Do NOT reset dtc_last_read_time here so the cooldown stays in effect
+  }
+
+  // 1. Process requested DTC read/clear commands
+  if (dtc_request_flag == 1) // Read requested
+  {
+    dtc_request_flag = 0;
+
+    // Guard: enforce cooldown between reads to avoid ECU flooding
+    if (now - dtc_last_read_time < DTC_READ_COOLDOWN_MS)
+    {
+      uint32_t remaining = (DTC_READ_COOLDOWN_MS - (now - dtc_last_read_time)) / 1000 + 1;
+      char msg[48];
+      snprintf(msg, sizeof(msg), "Please wait %lu s before reading again.", (unsigned long)remaining);
+      LVGL_EXEC(dtc_set_status_text(msg));
+      Serial.println("[DTC] Read blocked – cooldown active.");
+      return;
+    }
+
+    // Guard: OBD must be connected
+    if (!obdChar)
+    {
+      LVGL_EXEC(dtc_set_status_text("OBD not connected. Cannot read DTCs."));
+      return;
+    }
+
+    dtc_query_active      = true;
+    dtc_clear_in_progress = false;
+    dtc_query_start_time  = now;
+    dtc_last_read_time    = now;
+    Serial.println("[DTC] Sending Mode 03 Read DTCs.");
+    obdWrite(CMD_DTC_READ, sizeof(CMD_DTC_READ));
+    return;
+  }
+  else if (dtc_request_flag == 2) // Clear requested
+  {
+    dtc_request_flag = 0;
+
+    // Guard: OBD must be connected
+    if (!obdChar)
+    {
+      LVGL_EXEC(dtc_set_status_text("OBD not connected. Cannot clear DTCs."));
+      return;
+    }
+
+    // Guard: engine MUST be off (RPM < 300) – hard server-side check, not just UI
+    if (latest_rpm >= 300.0f)
+    {
+      LVGL_EXEC(dtc_set_status_text("Engine running! Stop engine before clearing DTCs."));
+      Serial.printf("[DTC] Clear blocked – engine running at %.0f RPM.\n", latest_rpm);
+      return;
+    }
+
+    // Guard: no other DTC operation in flight
+    if (dtc_query_active)
+    {
+      LVGL_EXEC(dtc_set_status_text("Query in progress. Please wait."));
+      return;
+    }
+
+    dtc_query_active      = true;
+    dtc_clear_in_progress = true;
+    dtc_query_start_time  = now;
+    dtc_last_read_time    = now;
+    dtc_post_clear_read_at = 0; // reset any stale scheduled read
+    Serial.println("[DTC] Sending Mode 04 Clear DTCs.");
+    obdWrite(CMD_DTC_CLEAR, sizeof(CMD_DTC_CLEAR));
+    return;
+  }
+
+  // 2. If a DTC query/clear is in flight, wait for response or timeout
+  if (dtc_query_active)
+  {
+    if (now - dtc_query_start_time > DTC_QUERY_TIMEOUT_MS)
+    {
+      dtc_query_active      = false;
+      dtc_clear_in_progress = false;
+      Serial.println("[DTC] Query timeout.");
+      LVGL_EXEC(dtc_set_status_text("OBD response timeout. Try again."));
+    }
+    return;
+  }
+  // ── END DTC GUARDRAILS ───────────────────────────────────────────────────
+
+  // 3. When on DTC screen, throttle OBD polling to RPM monitoring (for live engine status badge)
+  if (lv_screen_active() == dtc_screen)
+  {
+    static uint32_t last_dtc_rpm_poll = 0;
+    if (now - last_dtc_rpm_poll >= 500)
+    {
+      last_dtc_rpm_poll = now;
+      obdWrite(CMD_RPM, sizeof(CMD_RPM));
+    }
+    return;
+  }
 
   // Poll OBD sequentially: one command every 75ms
   // Fast cycle: RPM, MAP (Boost), LOAD, SPEED, TEMP, IAT, MAF, FUEL_RATE

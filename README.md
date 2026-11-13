@@ -21,10 +21,15 @@ A modern, high-performance automotive Head-Up Display (HUD) and digital instrume
   - Compatible with direct OBD-II PID `015E` and CRDi diesel fuel-rate calculation (Engine Load PID `0104` + RPM PID `010C` tailored for 1.5 CRDi / Bosch EDC16 ECUs).
 - **Intake Air Temperature (IAT)**: Real-time manifold intake charge temperature (`°C`).
 - **Real-Time G-Force Meter**: Dynamic lateral and longitudinal acceleration meter using the onboard **QMI8658 6-axis IMU**, with gravity-vector baseline subtraction and auto-zeroing at standstill.
+- **OBD-II DTC Diagnostics & Clearing**:
+  - Dedicated Diagnostic Trouble Code screen accessible from Settings.
+  - Automatically queries ECU Mode 03 and displays decoded fault codes with short descriptive titles.
+  - One-touch DTC clearing (OBD Mode 04) with engine safety interlock (Clear button is enabled only when engine is off, locked when engine is running).
 - **Settings Screen**:
   - Adjustable backlight brightness.
   - HUD mirror / flip mode for windshield reflection projection.
   - Deep sleep restart and disconnect auto-reboot.
+  - Direct shortcut to DTC Diagnostics screen.
 
 ---
 
@@ -39,6 +44,7 @@ A modern, high-performance automotive Head-Up Display (HUD) and digital instrume
 | **Fuel Consumption** | 0.0 – 35.0 L/100km | PID `015E` / PID `0104` + `010C` | Instant fuel consumption arc & digital readout |
 | **Intake Temp** | -40 – 215 °C | Mode 01 PID `010F` (IAT) | Charge air temperature |
 | **G-Force** | 0.00 – 2.50 G | Onboard QMI8658 6-axis IMU | Planar acceleration magnitude |
+| **DTC Fault Codes** | Confirmed DTCs | Mode 03 / Mode 04 | Read decoded DTCs & Clear with engine off |
 
 ---
 

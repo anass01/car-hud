@@ -163,6 +163,7 @@ void hud_ui_init_gen(const char * asset_path);
 /*Include all the widgets, components and screens of this library*/
 #include "components/settings_item/settings_item_gen.h"
 #include "screens/dashboard_gen.h"
+#include "screens/dtc_gen.h"
 #include "screens/settings_gen.h"
 
 #ifdef __cplusplus
