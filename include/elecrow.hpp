@@ -8,15 +8,17 @@
 #define PI4IO_I2C_ADDR 0x43
 
 // Extended IO function
-void init_IO_extender()
+inline void init_IO_extender()
 {
     Wire.beginTransmission(PI4IO_I2C_ADDR);
     Wire.write(0x01); // test register
     Wire.endTransmission();
-    Wire.requestFrom(PI4IO_I2C_ADDR, 1);
-    uint8_t rxdata = Wire.read();
-    Serial.print("Device ID: ");
-    Serial.println(rxdata, HEX);
+    if (Wire.requestFrom((uint8_t)PI4IO_I2C_ADDR, (uint8_t)1) == 1)
+    {
+        uint8_t rxdata = Wire.read();
+        Serial.print("Device ID: ");
+        Serial.println(rxdata, HEX);
+    }
 
     Wire.beginTransmission(PI4IO_I2C_ADDR);
     Wire.write(0x03);                                                 // IO direction register
@@ -29,13 +31,14 @@ void init_IO_extender()
     Wire.endTransmission();
 }
 
-void set_pin_io(uint8_t pin_number, bool value)
+inline void set_pin_io(uint8_t pin_number, bool value)
 {
-
     Wire.beginTransmission(PI4IO_I2C_ADDR);
     Wire.write(0x05); // test register
     Wire.endTransmission();
-    Wire.requestFrom(PI4IO_I2C_ADDR, 1);
+    if (Wire.requestFrom((uint8_t)PI4IO_I2C_ADDR, (uint8_t)1) != 1)
+        return;
+
     uint8_t rxdata = Wire.read();
     Serial.print("Before the change: ");
     Serial.println(rxdata, HEX);
@@ -50,7 +53,7 @@ void set_pin_io(uint8_t pin_number, bool value)
     Wire.endTransmission();
 }
 
-void elecrow_c3_init()
+inline void elecrow_c3_init()
 {
     Wire.begin(4, 5);
     init_IO_extender();

@@ -36,11 +36,11 @@ public:
         }
 
         // CTRL1 (0x02): Enable address auto-increment (bit 6 = 1 -> 0x60)
-        writeReg(0x02, 0x60);
+        if (!writeReg(0x02, 0x60)) return false;
         // CTRL2 (0x03): Accelerometer +/-8g, 100Hz ODR (0x23)
-        writeReg(0x03, 0x23);
+        if (!writeReg(0x03, 0x23)) return false;
         // CTRL7 (0x08): Enable Accelerometer and Gyroscope (0x03)
-        writeReg(0x08, 0x03);
+        if (!writeReg(0x08, 0x03)) return false;
 
         gravity_calibrated = false;
         calib_samples = 0;
@@ -87,6 +87,8 @@ public:
             if (calib_samples > 25)
                 gravity_calibrated = true;
             g_total = 0.0f;
+            g_lat = 0.0f;
+            g_lon = 0.0f;
             return true;
         }
 
@@ -128,9 +130,15 @@ public:
 
         // Deadband filter for sensor noise
         if (g_dyn < 0.03f)
+        {
             g_dyn = 0.0f;
+            hx = 0.0f;
+            hy = 0.0f;
+        }
 
         g_total = g_dyn;
+        g_lon = hx; // Forward / rearward acceleration
+        g_lat = hy; // Lateral (cornering) acceleration
         return true;
     }
 
@@ -147,12 +155,12 @@ private:
         return (id == 0x05);
     }
 
-    void writeReg(uint8_t reg, uint8_t val)
+    bool writeReg(uint8_t reg, uint8_t val)
     {
         Wire.beginTransmission(i2c_addr);
         Wire.write(reg);
         Wire.write(val);
-        Wire.endTransmission();
+        return (Wire.endTransmission() == 0);
     }
 };
 

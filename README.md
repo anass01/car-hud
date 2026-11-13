@@ -6,6 +6,47 @@ A modern, high-performance automotive Head-Up Display (HUD) and digital instrume
 
 ---
 
+## 🏗️ System Architecture
+
+```text
+ ┌───────────────────────────────────────────────────────────────┐
+ │                   Vehicle ECU (CAN Bus 500k)                  │
+ └───────────────────────────────┬───────────────────────────────┘
+                                 │ ISO 15765-4 OBD-II
+ ┌───────────────────────────────▼───────────────────────────────┐
+ │                ELM327 BLE 4.0 Mini Adapter                    │
+ └───────────────────────────────┬───────────────────────────────┘
+                                 │ BLE Notifications (UUID FFF0/FFF1)
+┌────────────────────────────────┼────────────────────────────────────────┐
+│ ESP32-S3 Firmware              │                                        │
+│                                │                                        │
+│  ┌─────────────────────────────▼─────────────────────────────────────┐  │
+│  │ NimBLE Stack & Notification Handler (Async FreeRTOS Context)      │  │
+│  └─────────────────────────────┬─────────────────────────────────────┘  │
+│                                │ Line Buffer & Tokenizer                │
+│  ┌─────────────────────────────▼─────────────────────────────────────┐  │
+│  │ OBD-II Command & Telemetry Parser                                 │  │
+│  │ - Mode 01: RPM, Speed, MAP (Boost), Load, Coolant, IAT, Fuel Rate │  │
+│  │ - Mode 03 / Mode 04: DTC Diagnostics & Safety-Interlocked Clear   │  │
+│  └─────────────────────────────┬─────────────────────────────────────┘  │
+│                                │                                        │
+│  ┌─────────────────────────────┴──────────┐   ┌──────────────────────┐  │
+│  │ LVGL 9 Reactive MVVM Subjects          │   │ QMI8658 6-Axis IMU   │  │
+│  │ (&speed, &engine_rpm, &turbo_boost, …) │◄──┤ Sensor Fusion Engine │  │
+│  └─────────────────────────────┬──────────┘   │ Gravity Baseline Sub │  │
+│                                │              └──────────────────────┘  │
+│  ┌─────────────────────────────▼─────────────────────────────────────┐  │
+│  │ Thread-Safe LVGL 9 Render Loop (FreeRTOS Recursive Mutex)         │  │
+│  └─────────────────────────────┬─────────────────────────────────────┘  │
+│                                │ RGB565 Swapped Partial Buffers         │
+│  ┌─────────────────────────────▼─────────────────────────────────────┐  │
+│  │ Display Driver (QSPI DMA to 412x412 IPS + I2C Capacitive Touch)   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## ✨ Features
 
 - **Automotive Startup Gauge Sweep**: 1.4-second ignition ceremony sweeping the tachometer, boost, and fuel consumption arcs up to maximum and back down to zero with smooth S-curve cosine easing.
@@ -22,7 +63,7 @@ A modern, high-performance automotive Head-Up Display (HUD) and digital instrume
 - **Intake Air Temperature (IAT)**: Real-time manifold intake charge temperature (`°C`).
 - **Real-Time G-Force Meter**: Dynamic lateral and longitudinal acceleration meter using the onboard **QMI8658 6-axis IMU**, with gravity-vector baseline subtraction and auto-zeroing at standstill.
 - **OBD-II DTC Diagnostics & Clearing**:
-  - Dedicated Diagnostic Trouble Code screen accessible from Settings.
+  - Dedicated Diagnostic Trouble Code screen accessible from Settings or via left swipe.
   - Automatically queries ECU Mode 03 and displays decoded fault codes with short descriptive titles.
   - One-touch DTC clearing (OBD Mode 04) with engine safety interlock (Clear button is enabled only when engine is off, locked when engine is running).
 - **Settings Screen**:
@@ -45,6 +86,16 @@ A modern, high-performance automotive Head-Up Display (HUD) and digital instrume
 | **Intake Temp** | -40 – 215 °C | Mode 01 PID `010F` (IAT) | Charge air temperature |
 | **G-Force** | 0.00 – 2.50 G | Onboard QMI8658 6-axis IMU | Planar acceleration magnitude |
 | **DTC Fault Codes** | Confirmed DTCs | Mode 03 / Mode 04 | Read decoded DTCs & Clear with engine off |
+
+---
+
+## ⚙️ Software Engineering Highlights
+
+- **Zero-Blocking Architecture**: OBD initialization (ATZ → ATE0 → ATSP6) and polling run via asynchronous state machines without `delay()` calls, ensuring smooth 60 FPS LVGL render performance.
+- **Thread Safety**: UI mutations across the BLE notification task and main render loop are strictly synchronized through FreeRTOS recursive mutexes (`LVGL_EXEC`).
+- **Resource Management**: Safe BLE client lifecycle management with cleanup guards preventing memory leaks on connection drops or reconnection retries.
+- **Safety Interlock**: Mode 04 ECU clear commands enforce a hardware/RPM guardrail refusing to send clear frames while the engine is running (`RPM >= 300`).
+- **Reactive MVVM Pattern**: Telemetry ingestion updates LVGL 9 reactive Subjects, completely decoupling low-level protocol decoding from GUI widgets.
 
 ---
 

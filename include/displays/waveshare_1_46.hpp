@@ -27,6 +27,12 @@ public:
         gfx = new Arduino_SPD2010(bus, -1 /* RST via TCA9554 */);
     }
 
+    ~DisplayWrapper()
+    {
+        delete gfx;
+        delete bus;
+    }
+
     bool init(void)
     {
         // 1. Initialize I2C bus for TCA9554 and Touch
@@ -54,9 +60,13 @@ public:
         Wire.endTransmission();
         delay(50);
 
-        // 3. Setup Backlight PWM on GPIO 5
+        // 3. Setup Backlight PWM on GPIO 5 (5 kHz, 8-bit resolution)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+        ledcAttach(LCD_BL, 5000, 8);
+#else
         ledcSetup(0, 5000, 8); // Channel 0, 5kHz, 8-bit resolution
         ledcAttachPin(LCD_BL, 0);
+#endif
         setBrightness(128);
 
         // 4. Setup Touch Interrupt Pin
@@ -146,7 +156,11 @@ public:
 
     void setBrightness(uint8_t brightness)
     {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+        ledcWrite(LCD_BL, brightness);
+#else
         ledcWrite(0, brightness);
+#endif
     }
 
     void writePixel(int32_t x, int32_t y, const uint16_t color)

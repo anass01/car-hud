@@ -45,6 +45,12 @@ public:
         );
     }
 
+    ~DisplayWrapper()
+    {
+        delete gfx;
+        delete bus;
+    }
+
     bool init(void)
     {
 #ifdef LCD_EN

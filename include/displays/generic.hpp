@@ -1,7 +1,7 @@
 #pragma once
 
 #define LGFX_USE_V1
-#include "Arduino.h"
+#include <Arduino.h>
 #include <LovyanGFX.hpp>
 
 #include "pins.h"

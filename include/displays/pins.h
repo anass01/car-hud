@@ -33,7 +33,6 @@
 #pragma once
 
 #ifdef ELECROW_C3
-
 // screen configs
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
@@ -64,7 +63,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
-#elif ESPC3
+#elif defined(ESPC3)
 
 // screen configs
 #define SCREEN_WIDTH 240
@@ -95,7 +94,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
-#elif ESPS3_1_28
+#elif defined(ESPS3_1_28)
 
 // screen configs
 #define SCREEN_WIDTH 240
@@ -126,7 +125,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
-#elif ESPS3_1_69
+#elif defined(ESPS3_1_69)
 
 // screen configs
 #define SCREEN_WIDTH 240
@@ -157,7 +156,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
-#elif M5_STACK_DIAL
+#elif defined(M5_STACK_DIAL)
 
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
@@ -166,7 +165,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 40)
 
-#elif VIEWE_SMARTRING
+#elif defined(VIEWE_SMARTRING)
 #define SCREEN_WIDTH 466
 #define SCREEN_HEIGHT 466
 
@@ -186,7 +185,7 @@
 
 #define LV_BUFFER_SIZE (SCREEN_WIDTH * 20)
 
-#elif VIEWE_KNOB_15
+#elif defined(VIEWE_KNOB_15)
 #define SCREEN_WIDTH 466
 #define SCREEN_HEIGHT 466
 

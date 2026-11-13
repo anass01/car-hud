@@ -58,25 +58,24 @@
 
 /* ---------- OBD COMMANDS (ASCII + CR) ---------- */
 // Trailing '1' tells ELM327 to expect 1 response and return immediately without waiting for timeout
-const uint8_t CMD_ATZ[] = {0x41, 0x54, 0x5A, 0x0D};               // Reset (ATZ)
-const uint8_t CMD_ATE0[] = {0x41, 0x54, 0x45, 0x30, 0x0D};        // Echo off (ATE0)
-const uint8_t CMD_ATSP6[] = {0x41, 0x54, 0x53, 0x50, 0x36, 0x0D}; // Set protocol to CAN 11/500 (ATSP6)
+static const uint8_t CMD_ATZ[]       = {0x41, 0x54, 0x5A, 0x0D};               // Reset (ATZ)
+static const uint8_t CMD_ATE0[]      = {0x41, 0x54, 0x45, 0x30, 0x0D};        // Echo off (ATE0)
+static const uint8_t CMD_ATSP6[]     = {0x41, 0x54, 0x53, 0x50, 0x36, 0x0D}; // Set protocol to CAN 11/500 (ATSP6)
 
-const uint8_t CMD_SPEED[] = {0x30, 0x31, 0x30, 0x44, 0x31, 0x0D};     // Vehicle speed (010D1)
-const uint8_t CMD_RPM[] = {0x30, 0x31, 0x30, 0x43, 0x31, 0x0D};       // Engine RPM (010C1)
-const uint8_t CMD_LOAD[] = {0x30, 0x31, 0x30, 0x34, 0x31, 0x0D};      // Engine Load % (01041)
-const uint8_t CMD_MAP[] = {0x30, 0x31, 0x30, 0x42, 0x31, 0x0D};       // Intake Manifold Absolute Pressure / Turbo MAP (010B1)
-const uint8_t CMD_FUEL_RATE[] = {0x30, 0x31, 0x35, 0x45, 0x31, 0x0D}; // Engine fuel rate L/h (015E1)
-const uint8_t CMD_MAF[] = {0x30, 0x31, 0x31, 0x30, 0x31, 0x0D};       // Mass Air Flow Sensor (01101)
-const uint8_t CMD_TEMP[] = {0x30, 0x31, 0x30, 0x35, 0x31, 0x0D};      // Coolant Temperature (01051)
-const uint8_t CMD_IAT[] = {0x30, 0x31, 0x30, 0x46, 0x31, 0x0D};       // Intake Air Temperature (010F1)
-const uint8_t CMD_DTC_READ[] = {0x30, 0x33, 0x0D};                     // Mode 03: Request DTCs (03\r)
-const uint8_t CMD_DTC_CLEAR[] = {0x30, 0x34, 0x0D};                    // Mode 04: Clear DTCs (04\r)
+static const uint8_t CMD_SPEED[]     = {0x30, 0x31, 0x30, 0x44, 0x31, 0x0D};     // Vehicle speed (010D1)
+static const uint8_t CMD_RPM[]       = {0x30, 0x31, 0x30, 0x43, 0x31, 0x0D};       // Engine RPM (010C1)
+static const uint8_t CMD_LOAD[]      = {0x30, 0x31, 0x30, 0x34, 0x31, 0x0D};      // Engine Load % (01041)
+static const uint8_t CMD_MAP[]       = {0x30, 0x31, 0x30, 0x42, 0x31, 0x0D};       // Intake Manifold Absolute Pressure / Turbo MAP (010B1)
+static const uint8_t CMD_FUEL_RATE[] = {0x30, 0x31, 0x35, 0x45, 0x31, 0x0D}; // Engine fuel rate L/h (015E1)
+static const uint8_t CMD_MAF[]       = {0x30, 0x31, 0x31, 0x30, 0x31, 0x0D};       // Mass Air Flow Sensor (01101)
+static const uint8_t CMD_TEMP[]      = {0x30, 0x31, 0x30, 0x35, 0x31, 0x0D};      // Coolant Temperature (01051)
+static const uint8_t CMD_IAT[]       = {0x30, 0x31, 0x30, 0x46, 0x31, 0x0D};       // Intake Air Temperature (010F1)
+static const uint8_t CMD_DTC_READ[]  = {0x30, 0x33, 0x0D};                     // Mode 03: Request DTCs (03\r)
+static const uint8_t CMD_DTC_CLEAR[] = {0x30, 0x34, 0x0D};                    // Mode 04: Clear DTCs (04\r)
 
 static QMI8658 imu;
 
 Preferences prefs;
-HWCDC USBSerial;
 
 /* ---------- LVGL DISPLAY ---------- */
 uint8_t lv_buffer[2][LV_BUFFER_SIZE];
@@ -86,14 +85,18 @@ lv_obj_t *dtc_screen;
 SemaphoreHandle_t lvgl_mutex;
 
 volatile uint8_t dtc_request_flag = 0; // 0 = idle, 1 = read, 2 = clear
-static bool dtc_query_active = false;
-static bool dtc_clear_in_progress = false;
+static volatile bool dtc_query_active = false;
+static volatile bool dtc_clear_in_progress = false;
 static uint32_t dtc_query_start_time = 0;
 static uint32_t dtc_last_read_time = 0;    // Cooldown: last time a Mode 03 was sent
 static uint32_t dtc_post_clear_read_at = 0; // Scheduled time for post-clear verify read (0 = none)
 static constexpr uint32_t DTC_READ_COOLDOWN_MS   = 5000;  // Min 5 s between successive reads
 static constexpr uint32_t DTC_POST_CLEAR_DELAY_MS = 1500; // Wait 1.5 s before re-reading after clear
 static constexpr uint32_t DTC_QUERY_TIMEOUT_MS   = 5000;  // 5 s hard timeout for any DTC command
+
+// Non-blocking OBD initialisation state machine: ATZ -> ATE0 -> ATSP6
+static volatile uint8_t obd_init_step = 0; // 0 = idle/ready, 1 = send ATZ, 2 = send ATE0, 3 = send ATSP6
+static uint32_t obd_init_time = 0;
 
 bool should_restart = false;
 
@@ -109,8 +112,8 @@ static NimBLEScan *scan = nullptr;
 /* ---------- HEX UTILS ---------- */
 static uint8_t hexToByte(uint8_t hi, uint8_t lo)
 {
-  if (hi >= 'a' && hi <= 'f') hi -= 32;
-  if (lo >= 'a' && lo <= 'f') lo -= 32;
+  hi = (uint8_t)toupper((unsigned char)hi);
+  lo = (uint8_t)toupper((unsigned char)lo);
   uint8_t h = (hi >= '0' && hi <= '9') ? (hi - '0') : ((hi >= 'A' && hi <= 'F') ? (hi - 'A' + 10) : 0);
   uint8_t l = (lo >= '0' && lo <= '9') ? (lo - '0') : ((lo >= 'A' && lo <= 'F') ? (lo - 'A' + 10) : 0);
   return (h << 4) | l;
@@ -154,10 +157,10 @@ String formatHexString(
   return out;
 }
 
-static float latest_rpm = 0.0f;
-static float current_fuel_lph = -1.0f;
-static float latest_engine_load = 15.0f; // Typical idle load for Hyundai 1.5 CRDi
-static bool sweep_active = true;
+static volatile float latest_rpm = 0.0f;
+static volatile float current_fuel_lph = -1.0f;
+static volatile float latest_engine_load = 15.0f; // Typical idle load for Hyundai 1.5 CRDi
+static volatile bool sweep_active = true;
 
 // Moving average buffer for consumption (debounced average of last 8 readings)
 #define CONSUMPTION_WINDOW_SIZE 8
@@ -183,7 +186,8 @@ void setDisconnectedDefaults()
   current_fuel_lph = -1.0f;
   resetConsumptionDebounce();
 
-  // Cancel any in-flight DTC operation so we don't send commands on a dead BLE link
+  // Reset OBD init state machine and DTC operations on link loss
+  obd_init_step          = 0;
   dtc_request_flag       = 0;
   dtc_query_active       = false;
   dtc_clear_in_progress  = false;
@@ -350,7 +354,7 @@ bool handleDtcResponse(const char *data, size_t len)
       LVGL_EXEC(dtc_clear_all_codes());
       // Schedule a verify-read 1.5 s from now (in loop(), not here — no delay() in notify context)
       dtc_post_clear_read_at = millis() + DTC_POST_CLEAR_DELAY_MS;
-      Serial.println("[DTC] Clear ACK received. Verify-read scheduled in 1.5 s.");
+      Timber.i("[DTC] Clear ACK received. Verify-read scheduled in 1.5 s.");
       return true;
     }
   }
@@ -364,7 +368,7 @@ bool handleDtcResponse(const char *data, size_t len)
   {
     dtc_query_active      = false;
     dtc_clear_in_progress = false;
-    Serial.printf("[DTC] Adapter error during DTC query: %s\n", data);
+    Timber.e("[DTC] Adapter error during DTC query: %s", data);
     LVGL_EXEC(dtc_set_status_text("Adapter error. Reconnect and try again."));
     return true;
   }
@@ -376,7 +380,7 @@ bool handleDtcResponse(const char *data, size_t len)
   {
     dtc_query_active = false;
     LVGL_EXEC({
-      s_dtc_count = 0;
+      dtc_reset_codes();
       dtc_finalize_scan();
     });
     return true;
@@ -414,7 +418,7 @@ bool handleDtcResponse(const char *data, size_t len)
     }
 
     LVGL_EXEC({
-      s_dtc_count = 0;
+      dtc_reset_codes();
       if (!all_zeros && count >= 2)
       {
         uint8_t start_idx = 0;
@@ -733,7 +737,7 @@ class ScanCB : public NimBLEScanCallbacks
       NimBLEDevice::getScan()->stop();
     }
   }
-};
+} scanCallbacks;
 
 /* ---------- CONNECT ---------- */
 bool connectObd()
@@ -743,6 +747,8 @@ bool connectObd()
   if (!client->connect(obdDevice))
   {
     Timber.e("Could not connect to device");
+    NimBLEDevice::deleteClient(client);
+    client = nullptr;
     return false;
   }
 
@@ -750,6 +756,9 @@ bool connectObd()
   if (!service)
   {
     Timber.e("OBD_SERVICE_UUID not found");
+    client->disconnect();
+    NimBLEDevice::deleteClient(client);
+    client = nullptr;
     return false;
   }
 
@@ -757,6 +766,9 @@ bool connectObd()
   if (!obdChar)
   {
     Timber.e("OBD_CHAR_UUID not found");
+    client->disconnect();
+    NimBLEDevice::deleteClient(client);
+    client = nullptr;
     return false;
   }
 
@@ -768,6 +780,11 @@ bool connectObd()
 
   Timber.v("Connected to OBD");
   LVGL_EXEC(lv_subject_set_int(&con_error, 0));
+
+  // Arm non-blocking OBD initialization sequence (ATZ -> ATE0 -> ATSP6)
+  obd_init_step = 1;
+  obd_init_time = millis();
+
   return true;
 }
 
@@ -782,9 +799,8 @@ void obdWrite(const uint8_t *cmd, size_t len)
 /* Display flushing */
 void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *data)
 {
-
-  uint32_t w = lv_area_get_width(area);
-  uint32_t h = lv_area_get_height(area);
+  int32_t w = lv_area_get_width(area);
+  int32_t h = lv_area_get_height(area);
 
 #ifdef SW_ROTATION
   lv_display_rotation_t rotation = lv_display_get_rotation(display);
@@ -796,15 +812,17 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *
     rotated_area = *area;
     lv_display_rotate_area(display, &rotated_area);
     /*Calculate the source stride (bytes in a line) from the width of the area*/
-    uint32_t src_stride = lv_draw_buf_width_to_stride(lv_area_get_width(area), cf);
+    uint32_t src_stride = lv_draw_buf_width_to_stride(w, cf);
     /*Calculate the stride of the destination (rotated) area too*/
     uint32_t dest_stride = lv_draw_buf_width_to_stride(lv_area_get_width(&rotated_area), cf);
     /*Have a buffer to store the rotated area and perform the rotation*/
     static uint8_t rotated_buf[LV_BUFFER_SIZE];
-    lv_draw_sw_rotate(data, rotated_buf, w, h, src_stride, dest_stride, rotation, cf);
+    lv_draw_sw_rotate(data, rotated_buf, (uint32_t)w, (uint32_t)h, src_stride, dest_stride, rotation, cf);
     /*Use the rotated area and rotated buffer from now on*/
     area = &rotated_area;
     data = rotated_buf;
+    w = lv_area_get_width(area);
+    h = lv_area_get_height(area);
   }
 #endif
 
@@ -813,7 +831,7 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *
     tft.endWrite();
   }
 
-  tft.pushImageDMA(area->x1, area->y1, area->x2 - area->x1 + 1, area->y2 - area->y1 + 1, (uint16_t *)data);
+  tft.pushImageDMA(area->x1, area->y1, w, h, (uint16_t *)data);
   lv_display_flush_ready(display); /* tell lvgl that flushing is done */
 }
 
@@ -821,11 +839,11 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area, unsigned char *
 void rounder_event_cb(lv_event_t *e)
 {
   lv_area_t *area = lv_event_get_invalidated_area(e);
-  uint16_t x1 = area->x1;
-  uint16_t x2 = area->x2;
+  int32_t x1 = area->x1;
+  int32_t x2 = area->x2;
 
-  uint16_t y1 = area->y1;
-  uint16_t y2 = area->y2;
+  int32_t y1 = area->y1;
+  int32_t y2 = area->y2;
 
 #ifdef WAVESHARE_146
   // SPD2010 requires horizontal coordinates aligned to multiples of 4
@@ -863,7 +881,7 @@ void my_touchpad_read(lv_indev_t *indev_driver, lv_indev_data_t *data)
     if (was_pressed)
     {
       was_pressed = false;
-      Serial.printf("[TOUCH] Released at (%d, %d)\r\n", last_x, last_y);
+      Timber.d("[TOUCH] Released at (%d, %d)", last_x, last_y);
     }
   }
   else
@@ -876,7 +894,7 @@ void my_touchpad_read(lv_indev_t *indev_driver, lv_indev_data_t *data)
     if (!was_pressed)
     {
       was_pressed = true;
-      Serial.printf("[TOUCH] Pressed at (%d, %d)\r\n", touchX, touchY);
+      Timber.d("[TOUCH] Pressed at (%d, %d)", touchX, touchY);
     }
   }
 }
@@ -922,18 +940,18 @@ void on_restart_cb(lv_event_t *e)
  */
 void lv_log_print(lv_log_level_t level, const char *buf)
 {
-  USBSerial.write(buf);
+  Serial.write(buf);
 }
 #endif
 
 void logCallback(Level level, unsigned long time, String message)
 {
-  USBSerial.print(message);
+  Serial.print(message);
 }
 
 void setup()
 {
-  USBSerial.begin(115200);
+  Serial.begin(115200);
 
   Timber.setColors(true);
   Timber.setLogCallback(logCallback);
@@ -942,7 +960,7 @@ void setup()
   elecrow_c3_init();
 #endif
 
-  prefs.begin("my-app");
+  prefs.begin("car-hud");
 
   tft.init();
   tft.initDMA();
@@ -1010,7 +1028,7 @@ void setup()
   {
     lv_obj_add_event_cb(settings_dtc, [](lv_event_t *e) {
       dtc_set_return_screen(settings_screen);
-      if (!s_dtc_scanned) {
+      if (!dtc_is_scanned()) {
         dtc_request_flag = 1; // Auto-trigger scan on opening DTC screen
       }
       lv_screen_load_anim(dtc_screen, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
@@ -1051,9 +1069,9 @@ void setup()
         lv_dir_t dir = lv_indev_get_gesture_dir(indev);
         if (dir == LV_DIR_LEFT) {
           lv_indev_wait_release(indev);
-          Serial.println("[UI] Dashboard swipe left detected -> opening DTC screen");
+          Timber.i("[UI] Dashboard swipe left detected -> opening DTC screen");
           dtc_set_return_screen(dashboard_screen);
-          if (!s_dtc_scanned) {
+          if (!dtc_is_scanned()) {
             dtc_request_flag = 1; // Auto-trigger scan on opening DTC screen
           }
           lv_screen_load_anim(dtc_screen, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
@@ -1064,7 +1082,7 @@ void setup()
 
   lv_obj_add_event_cb(dashboard_screen, [](lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
-      Serial.println("[UI] Dashboard long press detected -> opening settings");
+      Timber.i("[UI] Dashboard long press detected -> opening settings");
     }
   }, LV_EVENT_LONG_PRESSED, NULL);
 
@@ -1079,7 +1097,7 @@ void setup()
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 
   scan = NimBLEDevice::getScan();
-  scan->setScanCallbacks(new ScanCB());
+  scan->setScanCallbacks(&scanCallbacks);
   scan->setActiveScan(true);
   scan->start(0);
 }
@@ -1145,15 +1163,34 @@ void loop()
 
   if (obdDevice && !client)
   {
-    if (connectObd())
+    connectObd();
+  }
+
+  // OBD initialisation state machine (runs non-blocking until step 0 / idle)
+  if (obd_init_step > 0 && obdChar)
+  {
+    switch (obd_init_step)
     {
-      delay(500);
-      obdWrite(CMD_ATZ, sizeof(CMD_ATZ));
-      delay(800);
-      obdWrite(CMD_ATE0, sizeof(CMD_ATE0));
-      delay(300);
-      obdWrite(CMD_ATSP6, sizeof(CMD_ATSP6));
-      delay(300);
+    case 1:
+      if (now - obd_init_time >= 500) {
+        obdWrite(CMD_ATZ, sizeof(CMD_ATZ));
+        obd_init_step = 2;
+        obd_init_time = now;
+      }
+      break;
+    case 2:
+      if (now - obd_init_time >= 800) {
+        obdWrite(CMD_ATE0, sizeof(CMD_ATE0));
+        obd_init_step = 3;
+        obd_init_time = now;
+      }
+      break;
+    case 3:
+      if (now - obd_init_time >= 300) {
+        obdWrite(CMD_ATSP6, sizeof(CMD_ATSP6));
+        obd_init_step = 0; // Initialization complete, ready for telemetry
+      }
+      break;
     }
   }
 
@@ -1202,7 +1239,7 @@ void loop()
     LVGL_EXEC(lv_subject_copy_string(&g_force_str, g_buf));
   }
 
-  if (!obdChar)
+  if (!obdChar || obd_init_step > 0)
     return;
 
   // ── DTC GUARDRAILS ───────────────────────────────────────────────────────
@@ -1219,7 +1256,7 @@ void loop()
     dtc_post_clear_read_at = 0;
     if (!dtc_query_active && obdChar) // only if not already busy
     {
-      Serial.println("[DTC] Post-clear verify read.");
+      Timber.i("[DTC] Post-clear verify read.");
       dtc_query_active      = true;
       dtc_clear_in_progress = false;
       dtc_query_start_time  = now;
@@ -1232,7 +1269,7 @@ void loop()
   // Guard 3: User navigated away from DTC screen mid-query → cancel silently
   if (dtc_query_active && lv_screen_active() != dtc_screen)
   {
-    Serial.println("[DTC] Screen left during query – cancelling.");
+    Timber.i("[DTC] Screen left during query – cancelling.");
     dtc_query_active      = false;
     dtc_clear_in_progress = false;
     dtc_post_clear_read_at = 0;
@@ -1251,7 +1288,7 @@ void loop()
       char msg[48];
       snprintf(msg, sizeof(msg), "Please wait %lu s before reading again.", (unsigned long)remaining);
       LVGL_EXEC(dtc_set_status_text(msg));
-      Serial.println("[DTC] Read blocked – cooldown active.");
+      Timber.w("[DTC] Read blocked – cooldown active.");
       return;
     }
 
@@ -1266,7 +1303,7 @@ void loop()
     dtc_clear_in_progress = false;
     dtc_query_start_time  = now;
     dtc_last_read_time    = now;
-    Serial.println("[DTC] Sending Mode 03 Read DTCs.");
+    Timber.i("[DTC] Sending Mode 03 Read DTCs.");
     obdWrite(CMD_DTC_READ, sizeof(CMD_DTC_READ));
     return;
   }
@@ -1281,11 +1318,11 @@ void loop()
       return;
     }
 
-    // Guard: engine MUST be off (RPM < 300) – hard server-side check, not just UI
+    // Guard: engine MUST be off (RPM < 300) – hard safety check, not just UI
     if (latest_rpm >= 300.0f)
     {
       LVGL_EXEC(dtc_set_status_text("Engine running! Stop engine before clearing DTCs."));
-      Serial.printf("[DTC] Clear blocked – engine running at %.0f RPM.\n", latest_rpm);
+      Timber.w("[DTC] Clear blocked – engine running at %.0f RPM.", latest_rpm);
       return;
     }
 
@@ -1301,7 +1338,7 @@ void loop()
     dtc_query_start_time  = now;
     dtc_last_read_time    = now;
     dtc_post_clear_read_at = 0; // reset any stale scheduled read
-    Serial.println("[DTC] Sending Mode 04 Clear DTCs.");
+    Timber.i("[DTC] Sending Mode 04 Clear DTCs.");
     obdWrite(CMD_DTC_CLEAR, sizeof(CMD_DTC_CLEAR));
     return;
   }
@@ -1313,7 +1350,7 @@ void loop()
     {
       dtc_query_active      = false;
       dtc_clear_in_progress = false;
-      Serial.println("[DTC] Query timeout.");
+      Timber.w("[DTC] Query timeout.");
       LVGL_EXEC(dtc_set_status_text("OBD response timeout. Try again."));
     }
     return;
@@ -1332,8 +1369,29 @@ void loop()
     return;
   }
 
-  // Poll OBD sequentially: one command every 75ms
-  // Fast cycle: RPM, MAP (Boost), LOAD, SPEED, TEMP, IAT, MAF, FUEL_RATE
+  // Sequential OBD polling schedule (one command every 75ms)
+  // Higher frequency allocated to dynamic parameters (RPM, Boost MAP, Load, Speed)
+  struct ObdPollCmd {
+    const uint8_t *cmd;
+    size_t len;
+  };
+
+  static const ObdPollCmd OBD_POLL_SCHEDULE[] = {
+    {CMD_RPM,       sizeof(CMD_RPM)},
+    {CMD_MAP,       sizeof(CMD_MAP)},
+    {CMD_LOAD,      sizeof(CMD_LOAD)},
+    {CMD_SPEED,     sizeof(CMD_SPEED)},
+    {CMD_RPM,       sizeof(CMD_RPM)},
+    {CMD_MAP,       sizeof(CMD_MAP)},
+    {CMD_LOAD,      sizeof(CMD_LOAD)},
+    {CMD_TEMP,      sizeof(CMD_TEMP)},
+    {CMD_RPM,       sizeof(CMD_RPM)},
+    {CMD_IAT,       sizeof(CMD_IAT)},
+    {CMD_MAF,       sizeof(CMD_MAF)},
+    {CMD_FUEL_RATE, sizeof(CMD_FUEL_RATE)}
+  };
+  static constexpr size_t OBD_POLL_COUNT = sizeof(OBD_POLL_SCHEDULE) / sizeof(OBD_POLL_SCHEDULE[0]);
+
   static uint32_t lastQueryTime = 0;
   static uint8_t queryStep = 0;
   const uint32_t OBD_POLL_INTERVAL = 75; // 75 ms between commands
@@ -1341,47 +1399,7 @@ void loop()
   if (now - lastQueryTime >= OBD_POLL_INTERVAL)
   {
     lastQueryTime = now;
-
-    switch (queryStep)
-    {
-    case 0:
-      obdWrite(CMD_RPM, sizeof(CMD_RPM));
-      break;
-    case 1:
-      obdWrite(CMD_MAP, sizeof(CMD_MAP));
-      break;
-    case 2:
-      obdWrite(CMD_LOAD, sizeof(CMD_LOAD));
-      break;
-    case 3:
-      obdWrite(CMD_SPEED, sizeof(CMD_SPEED));
-      break;
-    case 4:
-      obdWrite(CMD_RPM, sizeof(CMD_RPM));
-      break;
-    case 5:
-      obdWrite(CMD_MAP, sizeof(CMD_MAP));
-      break;
-    case 6:
-      obdWrite(CMD_LOAD, sizeof(CMD_LOAD));
-      break;
-    case 7:
-      obdWrite(CMD_TEMP, sizeof(CMD_TEMP));
-      break;
-    case 8:
-      obdWrite(CMD_RPM, sizeof(CMD_RPM));
-      break;
-    case 9:
-      obdWrite(CMD_IAT, sizeof(CMD_IAT));
-      break;
-    case 10:
-      obdWrite(CMD_MAF, sizeof(CMD_MAF));
-      break;
-    case 11:
-      obdWrite(CMD_FUEL_RATE, sizeof(CMD_FUEL_RATE));
-      break;
-    }
-
-    queryStep = (queryStep + 1) % 12;
+    obdWrite(OBD_POLL_SCHEDULE[queryStep].cmd, OBD_POLL_SCHEDULE[queryStep].len);
+    queryStep = (queryStep + 1) % OBD_POLL_COUNT;
   }
 }

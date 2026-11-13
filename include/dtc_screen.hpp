@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <lvgl.h>
+#include <Timber.h>
 #include "hud_ui.h"
 #include "displays/pins.h"
 
@@ -152,12 +153,17 @@ struct DtcItem {
     const char *title;
 };
 
-#define MAX_STORED_DTCS 16
+static constexpr size_t MAX_STORED_DTCS = 16;
 
 static DtcItem s_dtc_list[MAX_STORED_DTCS];
 static uint8_t s_dtc_count = 0;
 static bool s_dtc_scanned = false;
 static bool s_engine_off = true;
+
+// Public accessors
+inline bool dtc_is_scanned() { return s_dtc_scanned; }
+inline uint8_t dtc_get_count() { return s_dtc_count; }
+inline void dtc_reset_codes() { s_dtc_count = 0; }
 
 // UI Object pointers
 static lv_obj_t *s_scr_dtc = nullptr;
@@ -173,8 +179,8 @@ static lv_obj_t *s_label_clear = nullptr;
 extern volatile uint8_t dtc_request_flag; // 0 = idle, 1 = read, 2 = clear
 
 /* ---------- FORWARD DECLARATIONS ---------- */
-void dtc_render_list();
-void dtc_update_engine_ui();
+inline void dtc_render_list();
+inline void dtc_update_engine_ui();
 
 extern lv_obj_t *dashboard_screen;
 static lv_obj_t *s_return_scr = nullptr;
@@ -261,7 +267,7 @@ inline void dtc_screen_init(lv_obj_t *scr, lv_obj_t *return_screen)
                 lv_dir_t dir = lv_indev_get_gesture_dir(indev);
                 if (dir == LV_DIR_RIGHT) {
                     lv_indev_wait_release(indev);
-                    Serial.println("[UI] DTC swipe right -> returning to dashboard");
+                    Timber.i("[UI] DTC swipe right -> returning to dashboard");
                     lv_obj_t *target = s_return_scr ? s_return_scr : dashboard_screen;
                     if (target) {
                         lv_screen_load_anim(target, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, 300, 0, false);
