@@ -145,6 +145,18 @@ static float current_fuel_lph = -1.0f;
 static float latest_engine_load = 15.0f; // Typical idle load for Hyundai 1.5 CRDi
 static bool sweep_active = true;
 
+// Moving average buffer for consumption (average of last 3 readings to debounce and make readable)
+static float consumption_history[3] = {0.0f, 0.0f, 0.0f};
+static uint8_t consumption_history_count = 0;
+static uint8_t consumption_history_idx = 0;
+static bool last_was_moving = false;
+
+static inline void resetConsumptionDebounce()
+{
+  consumption_history_count = 0;
+  consumption_history_idx = 0;
+}
+
 void updateFuelConsumption();
 
 // Fuel rate calculation for Hyundai Accent 1.5 CRDi (D4FA 4-cyl 16V, Bosch EDC16)
@@ -153,6 +165,7 @@ void setDisconnectedDefaults()
   latest_rpm = 0.0f;
   latest_engine_load = 0.0f;
   current_fuel_lph = -1.0f;
+  resetConsumptionDebounce();
 
   LVGL_EXEC({
     lv_subject_set_int(&speed, 0);
@@ -205,30 +218,65 @@ void updateFuelConsumption()
     return;
 
   int spd = lv_subject_get_int(&speed);
+  bool is_moving = (spd > 3);
+
+  // If vehicle transitioned between moving and stationary, reset rolling average buffer
+  if (is_moving != last_was_moving)
+  {
+    resetConsumptionDebounce();
+    last_was_moving = is_moving;
+  }
+
+  float instant_val = 0.0f;
+  if (is_moving)
+  {
+    instant_val = (current_fuel_lph / (float)spd) * 100.0f;
+    if (instant_val > 35.0f)
+      instant_val = 35.0f;
+    if (instant_val < 0.0f)
+      instant_val = 0.0f;
+  }
+  else
+  {
+    instant_val = current_fuel_lph;
+    if (instant_val > 35.0f)
+      instant_val = 35.0f;
+    if (instant_val < 0.0f)
+      instant_val = 0.0f;
+  }
+
+  // Rolling average of the last 3 readings to debounce and stabilize the display
+  consumption_history[consumption_history_idx] = instant_val;
+  consumption_history_idx = (consumption_history_idx + 1) % 3;
+  if (consumption_history_count < 3)
+    consumption_history_count++;
+
+  float sum = 0.0f;
+  for (uint8_t i = 0; i < consumption_history_count; i++)
+  {
+    sum += consumption_history[i];
+  }
+  float avg_val = sum / (float)consumption_history_count;
+
   char buf[32];
   char val_buf[16];
   char unit_buf[16];
-  int arc_val = 0;
+  int arc_val = (int)(avg_val + 0.5f);
+  if (arc_val > 35)
+    arc_val = 35;
+  if (arc_val < 0)
+    arc_val = 0;
 
-  if (spd > 3)
+  if (is_moving)
   {
-    // In motion: calculate L/100km
-    float l_100km = (current_fuel_lph / (float)spd) * 100.0f;
-    if (l_100km > 35.0f)
-      l_100km = 35.0f; // clamp to 35.0 L/100km for gauge arc
-    arc_val = (int)(l_100km + 0.5f); // 0 to 35 for the arc
-    snprintf(buf, sizeof(buf), "%.1f L/100km", l_100km);
-    snprintf(val_buf, sizeof(val_buf), "%.1f", l_100km);
+    snprintf(buf, sizeof(buf), "%.1f L/100km", avg_val);
+    snprintf(val_buf, sizeof(val_buf), "%.1f", avg_val);
     snprintf(unit_buf, sizeof(unit_buf), "L/100km");
   }
   else
   {
-    // Stationary / Idle: display L/h
-    arc_val = (int)(current_fuel_lph + 0.5f);
-    if (arc_val > 35)
-      arc_val = 35;
-    snprintf(buf, sizeof(buf), "%.1f L/h", current_fuel_lph);
-    snprintf(val_buf, sizeof(val_buf), "%.1f", current_fuel_lph);
+    snprintf(buf, sizeof(buf), "%.1f L/h", avg_val);
+    snprintf(val_buf, sizeof(val_buf), "%.1f", avg_val);
     snprintf(unit_buf, sizeof(unit_buf), "L/h");
   }
 

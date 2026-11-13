@@ -81,21 +81,6 @@
 		<style name="style_dark" />
 
 		<!-- 1. Instant Consumption Arc on right side (20° to 55°) -->
-		<lv_arc
-			bg_start_angle="20"
-			bg_end_angle="55"
-			align="center"
-			width="396"
-			height="396"
-			min_value="0"
-			max_value="35"
-			bind_value="fuel_consumption"
-			clickable="false"
-		>
-			<style name="style_consumption_track" />
-			<style name="style_consumption_indicator" selector="indicator" />
-			<style name="style_knob" selector="knob" />
-		</lv_arc>
 
 		<!-- 2. Main RPM Tachometer Arc (145° to 35°) -->
 		<lv_arc
@@ -154,23 +139,12 @@
 			width="364"
 			height="364"
 			clickable="false"
+			min_value="0"
+			max_value="35"
+			bind_value="fuel_consumption"
 		>
-			<style name="style_thin_frame" />
-			<style name="style_no_indicator" selector="indicator" />
-			<style name="style_knob" selector="knob" />
-		</lv_arc>
-		<lv_arc
-			bg_start_angle="335"
-			bg_end_angle="25"
-			start_angle="0"
-			end_angle="0"
-			align="center"
-			width="348"
-			height="348"
-			clickable="false"
-		>
-			<style name="style_thin_frame" />
-			<style name="style_no_indicator" selector="indicator" />
+			<style name="style_consumption_track" />
+			<style name="style_consumption_indicator" selector="indicator" />
 			<style name="style_knob" selector="knob" />
 		</lv_arc>
 
@@ -263,20 +237,20 @@
 		/>
 
 		<!-- 11. Bottom Section: Turbo Boost & Intake Temp -->
-		<lv_image src="turbo" align="center" x="-68" y="120" />
+		<lv_image src="turbo" align="center" x="-20" y="122" />
 		<lv_label
 			bind_text="turbo_boost_str"
 			align="center"
-			x="-10"
-			y="120"
-			style_text_font="roboto_regular_24"
+			x="0"
+			y="156"
+			style_text_font="roboto_bold_40"
 			style_text_color="0xb84a22"
 		/>
 		<lv_label
 			bind_text="intake_temp_str"
 			align="center"
-			x="54"
-			y="120"
+			x="20"
+			y="122"
 			style_text_font="roboto_regular_24"
 			style_text_color="0x7a8394"
 		/>
